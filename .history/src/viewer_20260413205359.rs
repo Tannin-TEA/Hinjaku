@@ -21,6 +21,15 @@ const PREFETCH_BEHIND: usize = 5;
 /// 表示解像度上限（これ以上は縮小してからテクスチャ化）
 const MAX_TEX_DIM: u32 = 4096; // 4K解像度まではリサイズせずGPUに委ねる
 
+// ── アーカイブリスト取得の結果 ─────────────────────────────────────────────
+struct ListResult {
+    path: PathBuf,
+    entries: Vec<archive::ImageEntry>,
+    start_name: Option<String>,
+    go_last: bool,
+    error: Option<String>,
+}
+
 // ── 回転 ────────────────────────────────────────────────────────────────────
 #[derive(Clone, Copy, PartialEq)]
 enum Rotation { R0, R90, R180, R270 }
@@ -67,8 +76,6 @@ pub struct Config {
     pub sort_order: SortOrder,
     /// 自然順ソートを有効にするか
     pub sort_natural: bool,
-    /// 右開き (RTL) かどうか
-    pub manga_rtl: bool,
 }
 
 impl Default for Config {
@@ -87,7 +94,6 @@ impl Default for Config {
             sort_mode: SortMode::Name,
             sort_order: SortOrder::Ascending,
             sort_natural: true,
-            manga_rtl: true,
         }
     }
 }
@@ -161,6 +167,10 @@ pub struct App {
     /// 外部インスタンスから送られてきたパスの受信
     path_rx: Receiver<PathBuf>,
 
+    /// アーカイブリスト取得用のチャンネル
+    list_tx: Sender<ListResult>,
+    list_rx: Receiver<ListResult>,
+
     /// 設定データ
     config: Config,
 
@@ -175,6 +185,8 @@ pub struct App {
     /// config.ini のパス保持
     config_path: Option<PathBuf>,
 
+    /// ファイルリストを取得中か
+    is_listing: bool,
     /// アーカイブ切り替え中で、最初の画像がロードされるのを待っている状態か
     is_loading_archive: bool,
 
@@ -258,6 +270,9 @@ impl App {
         // パス転送用のチャンネル
         let (path_tx, path_rx) = mpsc::channel();
 
+        // リスト取得用のチャンネル
+        let (list_tx, list_rx) = mpsc::channel();
+
         // リスナーが渡された場合、通信待ち受けスレッドを起動
         if let Some(l) = listener {
             let tx = path_tx.clone();
@@ -289,12 +304,15 @@ impl App {
             current_idx_shared,
             wheel_accumulator: 0.0,
             path_rx,
+            list_tx,
+            list_rx,
             config,
             show_settings: false,
             show_sort_settings: false,
             sort_focus_idx: 0,
             settings_args_tmp,
             config_path,
+            is_listing: false,
             is_loading_archive: false,
             last_display_change_time: 0.0,
             was_focused: true,
@@ -476,6 +494,7 @@ impl App {
         self.is_loading_archive = false;
         self.rotations.clear();
 
+        self.is_listing = true;
         let (archive_path, start_name) = if path.is_file() && archive::is_image_ext(&path.to_string_lossy()) {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
             let dir  = path.parent().unwrap().to_path_buf();
@@ -484,39 +503,23 @@ impl App {
             (path, None)
         };
 
-        match archive::list_images(&archive_path) {
-            Ok(entries) if entries.is_empty() => {
-                self.error = Some("画像ファイルが見つかりません".to_string());
-            }
-            Ok(entries) => {
-                self.entries_meta = entries;
-                // 1. まずソート前のリストを作成
-                self.entries = self.entries_meta.iter().map(|e| e.name.clone()).collect();
-                // 2. ソートを適用（この中で self.entries が並べ替えられる）
-                self.apply_sorting();
-
-                // 3. ソート済みのリストから、指定された画像の新しい位置を探す
-                if let Some(ref name) = start_name {
-                    self.current = self.entries.iter().position(|n| {
-                        std::path::Path::new(n).file_name()
-                            .map(|f| f.to_string_lossy().as_ref() == name.as_str())
-                            .unwrap_or(false)
-                    }).unwrap_or(0);
-                } else {
-                    self.current = 0;
+        let tx = self.list_tx.clone();
+        let ctx_clone = ctx.clone();
+        std::thread::spawn(move || {
+            let result = match archive::list_images(&archive_path) {
+                Ok(entries) if entries.is_empty() => {
+                    ListResult { path: archive_path, entries, start_name, go_last: false, error: Some("画像ファイルが見つかりません".to_string()) }
                 }
-                
-                self.target_index = self.current;
-                self.archive_path = Some(archive_path);
-                self.is_loading_archive = true;
-                self.last_display_change_time = ctx.input(|i| i.time);
-                self.schedule_prefetch();
-                ctx.request_repaint();
-            }
-            Err(e) => {
-                self.error = Some(format!("開けませんでした: {e}"));
-            }
-        }
+                Ok(entries) => {
+                    ListResult { path: archive_path, entries, start_name, go_last: false, error: None }
+                }
+                Err(e) => {
+                    ListResult { path: archive_path, entries: vec![], start_name, go_last: false, error: Some(format!("開けませんでした: {e}")) }
+                }
+            };
+            let _ = tx.send(result);
+            ctx_clone.request_repaint();
+        });
     }
 
     // ── 回転変更（回転が変わったエントリのキャッシュを無効化） ──────────────
@@ -545,24 +548,39 @@ impl App {
         ctx.request_repaint();
     }
 
-    // ── ディレクトリ移動 ──────────────────────────────────────────────────
-    fn sibling_dirs(&self) -> Option<(Vec<PathBuf>, usize)> {
-        let path   = self.archive_path.as_ref()?;
+    // ── 再帰的に隣接ディレクトリを探す（階層を遡る） ─────────────────────────────
+    fn find_adjacent_path_recursive(&self, path: &std::path::Path, forward: bool) -> Option<PathBuf> {
         let parent = path.parent()?;
+        let current_name = path.file_name()?;
+
         let mut siblings: Vec<PathBuf> = std::fs::read_dir(parent).ok()?
             .filter_map(|e| e.ok()).map(|e| e.path())
             .filter(|p| {
-                if p.is_dir() { return true; }
-                matches!(p.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase()).as_deref(), Some("zip"|"7z"))
+                p.is_dir() || matches!(p.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase()).as_deref(), Some("zip"|"7z"))
             })
             .collect();
+
         siblings.sort_by(|a, b| {
-            let sa = a.to_string_lossy();
-            let sb = b.to_string_lossy();
-            archive::natord(&sa, &sb)
+            archive::natord(&a.to_string_lossy(), &b.to_string_lossy())
         });
-        let idx = siblings.iter().position(|p| p == path)?;
-        Some((siblings, idx))
+
+        let idx = siblings.iter().position(|p| p.file_name() == Some(current_name))?;
+
+        if forward {
+            if idx + 1 < siblings.len() {
+                Some(siblings[idx + 1].clone())
+            } else {
+                // この階層の末尾なので、親の階層へ遡って次を探す
+                self.find_adjacent_path_recursive(parent, true)
+            }
+        } else {
+            if idx > 0 {
+                Some(siblings[idx - 1].clone())
+            } else {
+                // この階層の先頭なので、親の階層へ遡って前を探す
+                self.find_adjacent_path_recursive(parent, false)
+            }
+        }
     }
 
     fn move_to_dir(&mut self, path: PathBuf, go_last: bool, ctx: &egui::Context) {
@@ -571,64 +589,52 @@ impl App {
         self.pending.clear();
         self.error = None;
         self.rotations.clear();
+        self.is_listing = true;
 
-        match archive::list_images(&path) {
-            Ok(entries) if entries.is_empty() => {
-                self.error = Some("画像ファイルが見つかりません".to_string());
-            }
-            Ok(entries) => {
-                self.entries_meta = entries;
-                self.entries = self.entries_meta.iter().map(|e| e.name.clone()).collect();
-                self.apply_sorting();
-
-                self.current = if go_last && !self.entries.is_empty() {
-                    let last_idx = self.entries.len().saturating_sub(1);
-                    if self.manga_mode && last_idx > 0 {
-                        // manga_shiftの状態に合わせて、最後が「見開きの左側」になるように調整
-                        let is_pair_start = if self.manga_shift { last_idx % 2 == 0 } else { last_idx % 2 != 0 };
-                        if is_pair_start { last_idx } 
-                        else { last_idx.saturating_sub(1) }
-                    } else { last_idx }
-                } else { 0 };
-
-                self.target_index = self.current;
-                self.archive_path = Some(path);
-                self.is_loading_archive = true;
-                self.last_display_change_time = ctx.input(|i| i.time);
-                self.schedule_prefetch();
-                ctx.request_repaint();
-            }
-            Err(e) => { self.error = Some(format!("開けませんでした: {e}")); }
-        }
+        let tx = self.list_tx.clone();
+        let ctx_clone = ctx.clone();
+        std::thread::spawn(move || {
+            let result = match archive::list_images(&path) {
+                Ok(entries) if entries.is_empty() => {
+                    ListResult { path, entries, start_name: None, go_last, error: Some("画像ファイルが見つかりません".to_string()) }
+                }
+                Ok(entries) => {
+                    ListResult { path, entries, start_name: None, go_last, error: None }
+                }
+                Err(e) => {
+                    ListResult { path, entries: vec![], start_name: None, go_last, error: Some(format!("開けませんでした: {e}")) }
+                }
+            };
+            let _ = tx.send(result);
+            ctx_clone.request_repaint();
+        });
     }
 
     fn go_prev_dir(&mut self, ctx: &egui::Context) {
-        if self.is_loading_archive { return; }
+        if self.is_listing { return; }
         // フォルダ移動のガード（0.1秒）
         if ctx.input(|i| i.time) - self.last_display_change_time < 0.1 { return; }
-        if let Some((siblings, idx)) = self.sibling_dirs() {
-            if idx > 0 { self.move_to_dir(siblings[idx-1].clone(), self.open_from_end,  ctx); }
+        if let Some(path) = self.archive_path.as_ref().and_then(|p| self.find_adjacent_path_recursive(p, false)) {
+            self.move_to_dir(path, self.open_from_end, ctx);
         }
     }
     fn go_next_dir(&mut self, ctx: &egui::Context) {
-        if self.is_loading_archive { return; }
+        if self.is_listing { return; }
         if ctx.input(|i| i.time) - self.last_display_change_time < 0.1 { return; }
-        if let Some((siblings, idx)) = self.sibling_dirs() {
-            if idx+1 < siblings.len() { self.move_to_dir(siblings[idx+1].clone(), false, ctx); }
+        if let Some(path) = self.archive_path.as_ref().and_then(|p| self.find_adjacent_path_recursive(p, true)) {
+            self.move_to_dir(path, false, ctx);
         }
     }
 
     /// マンガモード専用：1ページだけ戻る
     fn go_single_prev(&mut self, ctx: &egui::Context) {
-        if self.entries.is_empty() { return; }
-        if self.is_loading_archive { return; }
-        if self.current != self.target_index { return; }
+        if self.is_listing { return; }
 
         // ページ送りのガード（0.05秒）
         let elapsed = ctx.input(|i| i.time) - self.last_display_change_time;
         if elapsed < 0.05 { return; }
 
-        if self.target_index == 0 {
+        if self.entries.is_empty() || self.target_index == 0 {
             self.go_prev_dir(ctx);
         } else {
             self.target_index -= 1;
@@ -639,15 +645,13 @@ impl App {
 
     /// マンガモード専用：1ページだけ進む
     fn go_single_next(&mut self, ctx: &egui::Context) {
-        if self.entries.is_empty() { return; }
-        if self.is_loading_archive { return; }
-        if self.current != self.target_index { return; }
+        if self.is_listing { return; }
 
         // ページ送りのガード（0.05秒）
         let elapsed = ctx.input(|i| i.time) - self.last_display_change_time;
         if elapsed < 0.05 { return; }
 
-        if self.target_index + 1 >= self.entries.len() {
+        if self.entries.is_empty() || self.target_index + 1 >= self.entries.len() {
             self.go_next_dir(ctx);
         } else {
             self.target_index += 1;
@@ -657,15 +661,13 @@ impl App {
     }
 
     fn go_prev(&mut self, ctx: &egui::Context) {
-        if self.entries.is_empty() { return; }
-        if self.is_loading_archive { return; }
-        if self.current != self.target_index { return; }
+        if self.is_listing { return; }
 
         // ページ送りのガード（0.05秒）
         let elapsed = ctx.input(|i| i.time) - self.last_display_change_time;
         if elapsed < 0.05 { return; }
 
-        if self.target_index == 0 {
+        if self.entries.is_empty() || self.target_index == 0 {
             self.go_prev_dir(ctx);
             return;
         }
@@ -686,14 +688,18 @@ impl App {
         self.schedule_prefetch();
         ctx.request_repaint();
     }
+
     fn go_next(&mut self, ctx: &egui::Context) {
-        if self.entries.is_empty() { return; }
-        if self.is_loading_archive { return; }
-        if self.current != self.target_index { return; }
+        if self.is_listing { return; }
 
         // ページ送りのガード（0.05秒）
         let elapsed = ctx.input(|i| i.time) - self.last_display_change_time;
         if elapsed < 0.05 { return; }
+
+        if self.entries.is_empty() {
+            self.go_next_dir(ctx);
+            return;
+        }
 
         let step = if self.manga_mode {
             if self.target_index + 1 >= self.entries.len() {
@@ -710,6 +716,7 @@ impl App {
         };
         if self.target_index + step >= self.entries.len() {
             self.go_next_dir(ctx);
+            return;
         } else {
             self.target_index += step;
             self.schedule_prefetch();
@@ -829,6 +836,44 @@ impl eframe::App for App {
         let is_focused = ctx.input(|i| i.focused);
         // ウィンドウがフォーカスを得た瞬間のクリックは無視するためのフラグ
         let click_allowed = is_focused && self.was_focused;
+        let modal_open = self.show_sort_settings || self.show_settings || self.is_listing;
+
+        // ── アーカイブリスト取得の完了をチェック ──────────────────────
+        while let Ok(res) = self.list_rx.try_recv() {
+            self.is_listing = false;
+            self.archive_path = Some(res.path);
+            if let Some(err) = res.error {
+                self.error = Some(err);
+                self.entries.clear();
+                self.entries_meta.clear();
+                continue;
+            }
+            
+            self.entries_meta = res.entries;
+            self.entries = self.entries_meta.iter().map(|e| e.name.clone()).collect();
+            self.apply_sorting();
+
+            if res.go_last {
+                let last_idx = self.entries.len().saturating_sub(1);
+                self.current = if self.manga_mode && last_idx > 0 {
+                    let is_pair_start = if self.manga_shift { last_idx % 2 == 0 } else { last_idx % 2 != 0 };
+                    if is_pair_start { last_idx } else { last_idx.saturating_sub(1) }
+                } else { last_idx };
+            } else if let Some(ref name) = res.start_name {
+                self.current = self.entries.iter().position(|n| {
+                    std::path::Path::new(n).file_name()
+                        .map(|f| f.to_string_lossy().as_ref() == name.as_str())
+                        .unwrap_or(false)
+                }).unwrap_or(0);
+            } else {
+                self.current = 0;
+            }
+
+            self.target_index = self.current;
+            self.is_loading_archive = true;
+            self.last_display_change_time = ctx.input(|i| i.time);
+            self.schedule_prefetch();
+        }
 
         // ── 外部プロセスからのパス転送をチェック ────────────────────────
         while let Ok(path) = self.path_rx.try_recv() {
@@ -856,7 +901,7 @@ impl eframe::App for App {
         }
 
         // ── キーボード ──────────────────────────────────────────────────
-        let (left, right, fit_t, zin, zout, manga_t, rcw, rccw, pgup, pgdn, up, dn, p_key, n_key, s_key, home, end, bs_key, e_key, i_key, enter_key, alt_pressed, esc_key, y_key) = ctx.input(|i| (
+        let (left, right, fit_t, zin, zout, manga_t, rcw, rccw, pgup, pgdn, up, dn, p_key, n_key, s_key, home, end, bs_key, e_key, i_key, enter_key, alt_pressed, esc_key) = ctx.input(|i| (
             i.key_pressed(egui::Key::ArrowLeft)  || i.key_pressed(egui::Key::A),
             i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D),
             i.key_pressed(egui::Key::F),
@@ -880,11 +925,7 @@ impl eframe::App for App {
             i.key_pressed(egui::Key::Enter),
             i.modifiers.alt,
             i.key_pressed(egui::Key::Escape),
-            i.key_pressed(egui::Key::Y),
         ));
-
-        // ソート/外部アプリ設定ウィンドウが開いている間はメイン操作を無効化
-        let modal_open = self.show_sort_settings || self.show_settings;
 
         // 操作の反転を廃止：常に左(A/Left)は戻る、右(D/Right)は進む
         if !modal_open && (left  || p_key) { self.go_prev(ctx); }
@@ -910,10 +951,6 @@ impl eframe::App for App {
         if s_key {
             self.show_sort_settings = !self.show_sort_settings;
             if self.show_sort_settings { self.sort_focus_idx = 0; }
-        }
-        if y_key {
-            self.config.manga_rtl = !self.config.manga_rtl;
-            self.save_config();
         }
         if i_key {
             self.config.linear_filter = !self.config.linear_filter;
@@ -1095,6 +1132,15 @@ impl eframe::App for App {
                 });
         }
 
+        // ── リスト取得中ウィンドウ ────────────────────────────────────────
+        if self.is_listing {
+            egui::Window::new("読み込み中")
+                .collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| { ui.spinner(); ui.label("ファイルリストを取得しています..."); });
+                });
+        }
+
         // ── メニューバー ────────────────────────────────────────────────
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -1138,11 +1184,6 @@ impl eframe::App for App {
                     if ui.selectable_label(self.manga_mode, "マンガモード (M)").clicked() {
                         self.manga_mode = !self.manga_mode;
                         self.schedule_prefetch(); ctx.request_repaint(); ui.close_menu();
-                    }
-                    if ui.selectable_label(self.config.manga_rtl, "右開き表示 (Y)").clicked() {
-                        self.config.manga_rtl = !self.config.manga_rtl;
-                        self.save_config();
-                        ui.close_menu();
                     }
                     if ui.button("並べ替えの設定 (S)").clicked() {
                         self.show_sort_settings = true;
@@ -1334,15 +1375,9 @@ impl eframe::App for App {
                         let cx = rect.min.x + total_w / 2.0;
                         let uv = egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0));
                         
-                        if self.config.manga_rtl {
-                            // 右開き: 右に1枚目(n)、左に2枚目(n+1)
-                            ui.painter().image(tex1_id, egui::Rect::from_min_size(egui::pos2(cx, rect.min.y+(total_h-ds1.y)/2.0), ds1), uv, egui::Color32::WHITE);
-                            ui.painter().image(tex2_id, egui::Rect::from_min_size(egui::pos2(cx-ds2.x, rect.min.y+(total_h-ds2.y)/2.0), ds2), uv, egui::Color32::WHITE);
-                        } else {
-                            // 左開き: 左に1枚目(n)、右に2枚目(n+1)
-                            ui.painter().image(tex1_id, egui::Rect::from_min_size(egui::pos2(cx-ds1.x, rect.min.y+(total_h-ds1.y)/2.0), ds1), uv, egui::Color32::WHITE);
-                            ui.painter().image(tex2_id, egui::Rect::from_min_size(egui::pos2(cx, rect.min.y+(total_h-ds2.y)/2.0), ds2), uv, egui::Color32::WHITE);
-                        }
+                        // 常に左に1枚目(index n)、右に2枚目(index n+1)
+                        ui.painter().image(tex1_id, egui::Rect::from_min_size(egui::pos2(cx-ds1.x, rect.min.y+(total_h-ds1.y)/2.0), ds1), uv, egui::Color32::WHITE);
+                        ui.painter().image(tex2_id, egui::Rect::from_min_size(egui::pos2(cx, rect.min.y+(total_h-ds2.y)/2.0), ds2), uv, egui::Color32::WHITE);
 
                         if click_allowed && resp.secondary_clicked() {
                             self.go_prev(ctx);

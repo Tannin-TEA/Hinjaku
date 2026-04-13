@@ -67,8 +67,6 @@ pub struct Config {
     pub sort_order: SortOrder,
     /// 自然順ソートを有効にするか
     pub sort_natural: bool,
-    /// 右開き (RTL) かどうか
-    pub manga_rtl: bool,
 }
 
 impl Default for Config {
@@ -87,7 +85,6 @@ impl Default for Config {
             sort_mode: SortMode::Name,
             sort_order: SortOrder::Ascending,
             sort_natural: true,
-            manga_rtl: true,
         }
     }
 }
@@ -582,13 +579,8 @@ impl App {
                 self.apply_sorting();
 
                 self.current = if go_last && !self.entries.is_empty() {
-                    let last_idx = self.entries.len().saturating_sub(1);
-                    if self.manga_mode && last_idx > 0 {
-                        // manga_shiftの状態に合わせて、最後が「見開きの左側」になるように調整
-                        let is_pair_start = if self.manga_shift { last_idx % 2 == 0 } else { last_idx % 2 != 0 };
-                        if is_pair_start { last_idx } 
-                        else { last_idx.saturating_sub(1) }
-                    } else { last_idx }
+                    let last = self.entries.len().saturating_sub(1);
+                    if self.manga_mode && last > 0 && last % 2 == 0 { last.saturating_sub(1) } else { last }
                 } else { 0 };
 
                 self.target_index = self.current;
@@ -604,7 +596,6 @@ impl App {
 
     fn go_prev_dir(&mut self, ctx: &egui::Context) {
         if self.is_loading_archive { return; }
-        // フォルダ移動のガード（0.1秒）
         if ctx.input(|i| i.time) - self.last_display_change_time < 0.1 { return; }
         if let Some((siblings, idx)) = self.sibling_dirs() {
             if idx > 0 { self.move_to_dir(siblings[idx-1].clone(), self.open_from_end,  ctx); }
@@ -624,9 +615,9 @@ impl App {
         if self.is_loading_archive { return; }
         if self.current != self.target_index { return; }
 
-        // ページ送りのガード（0.05秒）
         let elapsed = ctx.input(|i| i.time) - self.last_display_change_time;
-        if elapsed < 0.05 { return; }
+        let delay = if self.target_index == 0 { 0.1 } else { 0.05 };
+        if elapsed < delay { return; }
 
         if self.target_index == 0 {
             self.go_prev_dir(ctx);
@@ -643,9 +634,9 @@ impl App {
         if self.is_loading_archive { return; }
         if self.current != self.target_index { return; }
 
-        // ページ送りのガード（0.05秒）
         let elapsed = ctx.input(|i| i.time) - self.last_display_change_time;
-        if elapsed < 0.05 { return; }
+        let delay = if self.target_index == 0 { 0.1 } else { 0.05 };
+        if elapsed < delay { return; }
 
         if self.target_index + 1 >= self.entries.len() {
             self.go_next_dir(ctx);
@@ -661,14 +652,9 @@ impl App {
         if self.is_loading_archive { return; }
         if self.current != self.target_index { return; }
 
-        // ページ送りのガード（0.05秒）
         let elapsed = ctx.input(|i| i.time) - self.last_display_change_time;
-        if elapsed < 0.05 { return; }
-
-        if self.target_index == 0 {
-            self.go_prev_dir(ctx);
-            return;
-        }
+        let delay = if self.target_index == 0 { 0.1 } else { 0.05 };
+        if elapsed < delay { return; }
 
         let step = if self.manga_mode {
             let first_pair_idx = if self.manga_shift { 0 } else { 1 };
@@ -682,18 +668,22 @@ impl App {
         } else {
             1
         };
-        self.target_index = self.target_index.saturating_sub(step);
-        self.schedule_prefetch();
-        ctx.request_repaint();
+        if self.target_index < step {
+            self.go_prev_dir(ctx);
+        } else {
+            self.target_index -= step;
+            self.schedule_prefetch();
+            ctx.request_repaint();
+        }
     }
     fn go_next(&mut self, ctx: &egui::Context) {
         if self.entries.is_empty() { return; }
         if self.is_loading_archive { return; }
         if self.current != self.target_index { return; }
 
-        // ページ送りのガード（0.05秒）
         let elapsed = ctx.input(|i| i.time) - self.last_display_change_time;
-        if elapsed < 0.05 { return; }
+        let delay = if self.target_index == 0 { 0.1 } else { 0.05 };
+        if elapsed < delay { return; }
 
         let step = if self.manga_mode {
             if self.target_index + 1 >= self.entries.len() {
@@ -856,7 +846,7 @@ impl eframe::App for App {
         }
 
         // ── キーボード ──────────────────────────────────────────────────
-        let (left, right, fit_t, zin, zout, manga_t, rcw, rccw, pgup, pgdn, up, dn, p_key, n_key, s_key, home, end, bs_key, e_key, i_key, enter_key, alt_pressed, esc_key, y_key) = ctx.input(|i| (
+        let (left, right, fit_t, zin, zout, manga_t, rcw, rccw, pgup, pgdn, up, dn, p_key, n_key, s_key, home, end, bs_key, e_key, i_key, enter_key, alt_pressed) = ctx.input(|i| (
             i.key_pressed(egui::Key::ArrowLeft)  || i.key_pressed(egui::Key::A),
             i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D),
             i.key_pressed(egui::Key::F),
@@ -879,8 +869,6 @@ impl eframe::App for App {
             i.key_pressed(egui::Key::I),
             i.key_pressed(egui::Key::Enter),
             i.modifiers.alt,
-            i.key_pressed(egui::Key::Escape),
-            i.key_pressed(egui::Key::Y),
         ));
 
         // ソート/外部アプリ設定ウィンドウが開いている間はメイン操作を無効化
@@ -910,10 +898,6 @@ impl eframe::App for App {
         if s_key {
             self.show_sort_settings = !self.show_sort_settings;
             if self.show_sort_settings { self.sort_focus_idx = 0; }
-        }
-        if y_key {
-            self.config.manga_rtl = !self.config.manga_rtl;
-            self.save_config();
         }
         if i_key {
             self.config.linear_filter = !self.config.linear_filter;
@@ -956,17 +940,6 @@ impl eframe::App for App {
                 // 枠（タイトルバー）を常に表示した状態で最大化を切り替える
                 ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.is_fullscreen));
-            }
-        }
-
-        // Escapeで全画面・ボーダレスを抜ける
-        if !modal_open && esc_key {
-            if self.is_fullscreen || self.is_borderless {
-                self.is_fullscreen = false;
-                self.is_borderless = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
             }
         }
 
@@ -1138,11 +1111,6 @@ impl eframe::App for App {
                     if ui.selectable_label(self.manga_mode, "マンガモード (M)").clicked() {
                         self.manga_mode = !self.manga_mode;
                         self.schedule_prefetch(); ctx.request_repaint(); ui.close_menu();
-                    }
-                    if ui.selectable_label(self.config.manga_rtl, "右開き表示 (Y)").clicked() {
-                        self.config.manga_rtl = !self.config.manga_rtl;
-                        self.save_config();
-                        ui.close_menu();
                     }
                     if ui.button("並べ替えの設定 (S)").clicked() {
                         self.show_sort_settings = true;
@@ -1334,15 +1302,9 @@ impl eframe::App for App {
                         let cx = rect.min.x + total_w / 2.0;
                         let uv = egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0));
                         
-                        if self.config.manga_rtl {
-                            // 右開き: 右に1枚目(n)、左に2枚目(n+1)
-                            ui.painter().image(tex1_id, egui::Rect::from_min_size(egui::pos2(cx, rect.min.y+(total_h-ds1.y)/2.0), ds1), uv, egui::Color32::WHITE);
-                            ui.painter().image(tex2_id, egui::Rect::from_min_size(egui::pos2(cx-ds2.x, rect.min.y+(total_h-ds2.y)/2.0), ds2), uv, egui::Color32::WHITE);
-                        } else {
-                            // 左開き: 左に1枚目(n)、右に2枚目(n+1)
-                            ui.painter().image(tex1_id, egui::Rect::from_min_size(egui::pos2(cx-ds1.x, rect.min.y+(total_h-ds1.y)/2.0), ds1), uv, egui::Color32::WHITE);
-                            ui.painter().image(tex2_id, egui::Rect::from_min_size(egui::pos2(cx, rect.min.y+(total_h-ds2.y)/2.0), ds2), uv, egui::Color32::WHITE);
-                        }
+                        // 常に左に1枚目(index n)、右に2枚目(index n+1)
+                        ui.painter().image(tex1_id, egui::Rect::from_min_size(egui::pos2(cx-ds1.x, rect.min.y+(total_h-ds1.y)/2.0), ds1), uv, egui::Color32::WHITE);
+                        ui.painter().image(tex2_id, egui::Rect::from_min_size(egui::pos2(cx, rect.min.y+(total_h-ds2.y)/2.0), ds2), uv, egui::Color32::WHITE);
 
                         if click_allowed && resp.secondary_clicked() {
                             self.go_prev(ctx);
