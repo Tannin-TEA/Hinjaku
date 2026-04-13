@@ -2,13 +2,16 @@ use anyhow::{anyhow, Result};
 use std::io::Read;
 use std::path::Path;
 
+/// 拡張子が画像かどうかを判定する
 pub fn is_image_ext(name: &str) -> bool {
     Path::new(name)
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| {
-            let lower = e.to_lowercase();
-            matches!(lower.as_str(), "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tiff" | "tif")
+            matches!(
+                e.to_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tiff" | "tif"
+            )
         })
         .unwrap_or(false)
 }
@@ -28,7 +31,12 @@ pub enum ArchiveKind {
 }
 
 pub fn detect_kind(path: &Path) -> ArchiveKind {
-    match path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase()).as_deref() {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .as_deref()
+    {
         Some("zip") => ArchiveKind::Zip,
         Some("7z") => ArchiveKind::SevenZ,
         _ => ArchiveKind::Plain,
@@ -36,13 +44,11 @@ pub fn detect_kind(path: &Path) -> ArchiveKind {
 }
 
 pub fn list_images(path: &Path) -> Result<Vec<ImageEntry>> {
-    let kind = detect_kind(path);
-    let entries = match kind {
-        ArchiveKind::Zip => list_zip(path)?,
-        ArchiveKind::SevenZ => list_7z(path)?,
-        ArchiveKind::Plain => list_plain(path)?,
-    };
-    Ok(entries)
+    match detect_kind(path) {
+        ArchiveKind::Zip => list_zip(path),
+        ArchiveKind::SevenZ => list_7z(path),
+        ArchiveKind::Plain => list_plain(path),
+    }
 }
 
 pub fn read_entry(archive_path: &Path, entry_name: &str) -> Result<Vec<u8>> {
@@ -50,8 +56,11 @@ pub fn read_entry(archive_path: &Path, entry_name: &str) -> Result<Vec<u8>> {
         ArchiveKind::Zip => read_zip(archive_path, entry_name),
         ArchiveKind::SevenZ => read_7z(archive_path, entry_name),
         ArchiveKind::Plain => {
-            let target = if archive_path.is_file() { archive_path.to_path_buf() } 
-                         else { archive_path.join(entry_name) };
+            let target = if archive_path.is_file() {
+                archive_path.to_path_buf()
+            } else {
+                archive_path.join(entry_name)
+            };
             Ok(std::fs::read(target)?)
         }
     }
@@ -67,14 +76,25 @@ fn list_zip(path: &Path) -> Result<Vec<ImageEntry>> {
         let entry = zip.by_index(i)?;
         let name = entry.name().to_string();
         if is_image_ext(&name) {
-            // zip の日時を Unix タイムスタンプに変換
-            let mtime = entry.last_modified().and_then(|t| {
-                chrono::NaiveDate::from_ymd_opt(t.year() as i32, t.month() as u32, t.day() as u32)
-                    .and_then(|d| d.and_hms_opt(t.hour() as u32, t.minute() as u32, t.second() as u32))
+            let mtime = entry
+                .last_modified()
+                .and_then(|t| {
+                    chrono::NaiveDate::from_ymd_opt(
+                        t.year() as i32,
+                        t.month() as u32,
+                        t.day() as u32,
+                    )
+                    .and_then(|d| {
+                        d.and_hms_opt(t.hour() as u32, t.minute() as u32, t.second() as u32)
+                    })
                     .map(|dt| dt.and_utc().timestamp() as u64)
-            }).unwrap_or(0);
-
-            entries.push(ImageEntry { name, mtime, size: entry.size() });
+                })
+                .unwrap_or(0);
+            entries.push(ImageEntry {
+                name,
+                mtime,
+                size: entry.size(),
+            });
         }
     }
     Ok(entries)
@@ -96,14 +116,14 @@ fn list_7z(path: &Path) -> Result<Vec<ImageEntry>> {
     sevenz_rust::decompress_file_with_extract_fn(path, Path::new("."), |entry, _reader, _dest| {
         let name = entry.name().to_string();
         if is_image_ext(&name) {
-            entries.push(ImageEntry { 
-                name, 
-                // NT FileTime (100ns intervals since 1601) を Unix 秒に変換
+            entries.push(ImageEntry {
+                name,
                 mtime: {
+                    // NT FileTime (100ns intervals since 1601) を Unix 秒に変換
                     let ticks: u64 = entry.last_modified_date.into();
                     (ticks / 10_000_000).saturating_sub(11_644_473_600)
                 },
-                size: entry.size
+                size: entry.size,
             });
         }
         Ok(false)
@@ -129,6 +149,7 @@ fn read_7z(path: &Path, entry_name: &str) -> Result<Vec<u8>> {
 // ── Plain folder / single file ───────────────────────────────────────────────
 
 fn list_plain(path: &Path) -> Result<Vec<ImageEntry>> {
+    // 単一ファイルが渡された場合は親ディレクトリのリストを返す
     if path.is_file() {
         let dir = path.parent().ok_or_else(|| anyhow!("No parent dir"))?;
         return list_plain(dir);
@@ -139,9 +160,17 @@ fn list_plain(path: &Path) -> Result<Vec<ImageEntry>> {
         let name_str = e.file_name().to_string_lossy().to_string();
         if is_image_ext(&name_str) {
             let meta = e.metadata()?;
-            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH)
-                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-            entries.push(ImageEntry { name: name_str, mtime, size: meta.len() });
+            let mtime = meta
+                .modified()
+                .unwrap_or(std::time::UNIX_EPOCH)
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            entries.push(ImageEntry {
+                name: name_str,
+                mtime,
+                size: meta.len(),
+            });
         }
     }
     Ok(entries)
@@ -150,8 +179,9 @@ fn list_plain(path: &Path) -> Result<Vec<ImageEntry>> {
 /// ナビゲーション用に、指定パス内のサブディレクトリとアーカイブをリストアップする
 pub fn list_nav_targets(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut targets = Vec::new();
-    if !path.is_dir() { return Ok(targets); }
-
+    if !path.is_dir() {
+        return Ok(targets);
+    }
     for entry in std::fs::read_dir(path)? {
         let e = entry?;
         let p = e.path();
@@ -204,5 +234,8 @@ fn consume_num(iter: &mut std::iter::Peekable<std::str::Chars>) -> u64 {
 }
 
 fn basename(s: &str) -> &str {
-    Path::new(s).file_name().and_then(|f| f.to_str()).unwrap_or(s)
+    Path::new(s)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(s)
 }
