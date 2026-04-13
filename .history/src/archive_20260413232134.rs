@@ -147,22 +147,6 @@ fn list_plain(path: &Path) -> Result<Vec<ImageEntry>> {
     Ok(entries)
 }
 
-/// ナビゲーション用に、指定パス内のサブディレクトリとアーカイブをリストアップする
-pub fn list_nav_targets(path: &Path) -> Result<Vec<std::path::PathBuf>> {
-    let mut targets = Vec::new();
-    if !path.is_dir() { return Ok(targets); }
-
-    for entry in std::fs::read_dir(path)? {
-        let e = entry?;
-        let p = e.path();
-        if p.is_dir() || matches!(detect_kind(&p), ArchiveKind::Zip | ArchiveKind::SevenZ) {
-            targets.push(p);
-        }
-    }
-    targets.sort_by(|a, b| natord(&a.to_string_lossy(), &b.to_string_lossy()));
-    Ok(targets)
-}
-
 // ── 自然順ソート ─────────────────────────────────────────────────────────────
 
 pub fn natord(a: &str, b: &str) -> std::cmp::Ordering {

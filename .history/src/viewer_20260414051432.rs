@@ -182,8 +182,6 @@ pub struct App {
 
     /// 設定画面の表示状態
     show_settings: bool,
-    /// ツリー表示の表示状態
-    show_tree: bool,
     /// ソート設定画面の表示状態
     show_sort_settings: bool,
     /// ソート設定ウィンドウ内のフォーカス行 (0:基準, 1:順序, 2:自然順)
@@ -323,7 +321,6 @@ impl App {
             path_rx,
             config,
             show_settings: false,
-            show_tree: true,
             show_sort_settings: false,
             sort_focus_idx: 0,
             settings_args_tmp,
@@ -553,39 +550,6 @@ impl App {
             Err(e) => {
                 self.error = Some(format!("開けませんでした: {e}"));
             }
-        }
-    }
-
-    // ── ツリー表示の描画ヘルパー ──────────────────────────────────────────
-    fn ui_dir_tree(&self, ui: &mut egui::Ui, path: PathBuf, ctx: &egui::Context, open_req: &mut Option<PathBuf>) {
-        let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let kind = archive::detect_kind(&path);
-        let is_archive = matches!(kind, archive::ArchiveKind::Zip | archive::ArchiveKind::SevenZ);
-        let icon = if is_archive { "📦 " } else { "📁 " };
-
-        let is_current = self.archive_path.as_ref() == Some(&path);
-        
-        let header = egui::CollapsingHeader::new(format!("{}{}", icon, filename))
-            .id_source(&path)
-            .selectable(true)
-            .selected(is_current);
-
-        let response = header.show(ui, |ui| {
-            if let Ok(entries) = std::fs::read_dir(&path) {
-                let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-                // 自然順でソート
-                paths.sort_by(|a, b| archive::natord(&a.to_string_lossy(), &b.to_string_lossy()));
-
-                for p in paths {
-                    if p.is_dir() || matches!(archive::detect_kind(&p), archive::ArchiveKind::Zip | archive::ArchiveKind::SevenZ) {
-                        self.ui_dir_tree(ui, p, ctx, open_req);
-                    }
-                }
-            }
-        });
-
-        if response.header_response.clicked() {
-            *open_req = Some(path);
         }
     }
 
@@ -929,7 +893,6 @@ impl eframe::App for App {
 
         // ── キーボード ──────────────────────────────────────────────────
         let (left, right, fit_t, zin, zout, manga_t, rcw, rccw, pgup, pgdn, up, dn, p_key, n_key, s_key, home, end, bs_key, e_key, i_key, enter_key, alt_pressed, esc_key, y_key) = ctx.input(|i| (
-        let (left, right, fit_t, zin, zout, manga_t, rcw, rccw, pgup, pgdn, up, dn, p_key, n_key, s_key, home, end, bs_key, e_key, i_key, enter_key, alt_pressed, esc_key, y_key, t_key) = ctx.input(|i| (
             i.key_pressed(egui::Key::ArrowLeft)  || i.key_pressed(egui::Key::A),
             i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D),
             i.key_pressed(egui::Key::F),
@@ -954,7 +917,6 @@ impl eframe::App for App {
             i.modifiers.alt,
             i.key_pressed(egui::Key::Escape),
             i.key_pressed(egui::Key::Y),
-            i.key_pressed(egui::Key::T),
         ));
 
         // ソート/外部アプリ設定ウィンドウが開いている間はメイン操作を無効化
@@ -985,7 +947,6 @@ impl eframe::App for App {
             self.show_sort_settings = !self.show_sort_settings;
             if self.show_sort_settings { self.sort_focus_idx = 0; }
         }
-        if t_key { self.show_tree = !self.show_tree; }
         if y_key {
             self.config.manga_rtl = !self.config.manga_rtl;
             self.save_config();
@@ -1170,22 +1131,6 @@ impl eframe::App for App {
                 });
         }
 
-        // ── サイドパネル（ツリー表示） ────────────────────────────────────
-        let mut tree_open_req = None;
-        if self.show_tree {
-            egui::SidePanel::left("tree_panel").default_width(200.0).show(ctx, |ui| {
-                ui.heading("ディレクトリツリー");
-                egui::ScrollArea::both().show(ui, |ui| {
-                    if let Some(path) = &self.archive_path {
-                        if let Some(parent) = path.parent() {
-                            self.ui_dir_tree(ui, parent.to_path_buf(), ctx, &mut tree_open_req);
-                        }
-                    }
-                });
-            });
-        }
-        if let Some(p) = tree_open_req { self.open_path(p, ctx); }
-
         // ── メニューバー ────────────────────────────────────────────────
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -1235,7 +1180,6 @@ impl eframe::App for App {
                         self.save_config();
                         ui.close_menu();
                     }
-                    if ui.selectable_label(self.show_tree, "ツリー表示 (T)").clicked() { self.show_tree = !self.show_tree; ui.close_menu(); }
                     if ui.button("並べ替えの設定 (S)").clicked() {
                         self.show_sort_settings = true;
                         ui.close_menu();
@@ -1367,22 +1311,15 @@ impl eframe::App for App {
                                 }
                             }
                             
-
                             ui.add_space(10.0);
                             ui.label("移動候補:");
-                            ui.label("周辺のディレクトリ構造:");
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 for path in self.nav_items.clone() {
                                     let icon = if path.is_dir() { "📁" } else { "📦" };
                                     if ui.button(format!("{} {}", icon, path.file_name().unwrap_or_default().to_string_lossy())).clicked() {
                                         self.open_path(path, ctx);
-                                let mut req = None;
-                                if let Some(p) = &self.archive_path {
-                                    if let Some(parent) = p.parent() {
-                                        self.ui_dir_tree(ui, parent.to_path_buf(), ctx, &mut req);
                                     }
                                 }
-                                if let Some(p) = req { self.open_path(p, ctx); }
                             });
                         });
                     } else {
