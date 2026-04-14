@@ -1868,6 +1868,7 @@ dependencies = [
  "serde",
  "sevenz-rust",
  "toml",
+ "windows-sys 0.59.0",
  "zip",
 ]
 
