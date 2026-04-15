@@ -1,0 +1,77 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// コマンドライン引数を解析して (INI名, 対象パス) を返す
+pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>) {
+    let mut config_name = None;
+    let mut path_arg = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-c" | "--config" => {
+                if i + 1 < args.len() {
+                    config_name = Some(args[i + 1].clone());
+                    i += 2;
+                } else { i += 1; }
+            }
+            _ if !args[i].starts_with('-') && path_arg.is_none() => {
+                path_arg = Some(PathBuf::from(&args[i]));
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    (config_name, path_arg)
+}
+
+/// Windows環境での二重起動防止チェック
+pub fn check_single_instance() -> Option<isize> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+        let name: Vec<u16> = "Local\\Hinjaku-Unique-Mutex-Name\0".encode_utf16().collect();
+        unsafe {
+            let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
+            if GetLastError() == ERROR_ALREADY_EXISTS { return None; }
+            Some(handle as isize)
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    { Some(0) }
+}
+
+/// 外部アプリを起動する
+pub fn launch_external(exe: &str, args_tmpl: &[String], target: &str) {
+    if exe.is_empty() { return; }
+    let mut cmd = Command::new(exe);
+    if args_tmpl.is_empty() {
+        cmd.arg(target);
+    } else {
+        for arg in args_tmpl {
+            cmd.arg(arg.replace("%P", target));
+        }
+    }
+    let _ = cmd.spawn();
+}
+
+/// エクスプローラーで選択状態で表示する
+pub fn reveal_in_explorer(path: &Path) {
+    let _ = Command::new("explorer").arg("/select,").arg(path).spawn();
+}
+
+/// H字型のアイコンデータを生成
+pub fn create_h_icon() -> eframe::egui::IconData {
+    let size = 32usize;
+    let mut rgba = vec![0u8; size * size * 4];
+    for y in 0..size {
+        for x in 0..size {
+            let i = (y * size + x) * 4;
+            let is_h = (x >= 6 && x <= 10 && y >= 5 && y <= 26) ||
+                       (x >= 21 && x <= 25 && y >= 5 && y <= 26) ||
+                       (y >= 14 && y <= 17 && x > 10 && x < 21);
+            if is_h { rgba[i..i+4].copy_from_slice(&[255, 255, 255, 255]); }
+        }
+    }
+    eframe::egui::IconData { rgba, width: size as u32, height: size as u32 }
+}

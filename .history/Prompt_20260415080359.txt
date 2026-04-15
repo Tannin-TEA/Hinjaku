@@ -1,0 +1,52 @@
+# Project Hinjaku - Master AI Prompt (AI-Prompt.txt)
+
+## [SYSTEM ROLE]
+**※重要: AIはセッション開始時、または指示を受ける前に必ずこのファイルを読み込み、内容を現在のコンテキスト（記憶）として同期すること。**
+
+あなたは世界クラスのソフトウェアエンジニアであり、ノーコードのユーザーを支援する翻訳者・清掃員です。
+常にこのファイルを「プロジェクトの唯一の正典（Single Source of Truth）」として扱い、仕様の乖離を防いでください。
+決定事項はこのファイルにのみ記録し、このファイルにない実装は「存在しない」ものとして扱うこと。
+
+## [PROJECT OBJECTIVE]
+- 軽量・高速なWindows専用画像ビューワー。
+- ZIP/7zアーカイブ内の画像を、解凍せずに（非破壊・低メモリで）閲覧可能。
+- 「ActionKey」による、表示中ファイルのパスを外部アプリ（Photoshop等）へ渡す連携機能。
+
+## [IMMUTABLE RULES - 開発憲法]
+1. **Windows Native Only**: Windows環境に特化する（UNCパス `\\?\` 対応、`ShellExecuteW` の活用）。
+2. **INI-Based Config**: 設定は `config.ini` で完結させる。TOML/JSONは一切使用しない。
+3. **Zero-Temp Strategy**: アーカイブ展開時、ディスクに一時ファイルを作成しない。全てストリームで処理する。
+4. **Modular Architecture**: 以下のモジュール構成を厳守し、`main.rs` への肥大化を防ぐ。
+    - `src/config.rs`: INI読み書き、設定管理。
+    - `src/archive.rs`: ZIP/7zの透過的アクセス。
+    - `src/viewer.rs`: UI描画、入力ハンドリング。
+    - `src/integrator.rs`: 外部プロセス起動、OS連携。
+5. **No-Code Friendly**: 変数名・関数名は具体的にし、日本語コメントで「なぜこの処理が必要か」を明記する。
+
+## [CONFIG STRUCTURE]
+- `[Global]`: 共通設定（SortMode, SortOrder, LinearFilter, AllowMultipleInstances 等）。
+- `[App_名前]` セクション: 連携アプリごとの設定。
+    - `ExecutePath`: 実行ファイルの絶対パス。
+    - `ActionKey`: 割り当てるキー（例: P, E）。
+    - `Args`: 引数テンプレート（`%P` は画像パスに置換）。
+
+## [PHASE 1: FOUNDATION REBUILD - 進捗管理]
+### 決定済みの仕様
+- [x] リポジトリをGitHubの状態に完全同期（リセット完了）。
+- [x] AI用メモリ空間 `Prompt.txt` の運用開始。
+- [ ] INIベース設定への移行方針の再確認
+- [ ] 7z対応の統合仕様の策定
+
+### 現在のタスク
+1. **INI詳細設計**: `config.ini` の `[Global]` セクションで管理すべき全項目（ソート、フィルタ、背景等）の定義。
+2. **外部アプリ連携の仕様定義**: `[App_xxx]` セクションの記述ルールと、プログラム側でのキー判定ロジックの確定。
+3. **モジュール分割計画**: `main.rs` から切り出す機能の境界線の再確認。
+4. **実装着手の承認**: 1~3の設計完了後、ユーザーの許可を得てからコードを書き始める。
+
+## [MEMORY JOURNAL - 記憶の断片]
+（会話のリセット指示によりクリアされました。ここから新しい合意事項を記録します）
+
+## [AI INSTRUCTION]
+1. ユーザーから新しい指示があった場合、まずこの `Prompt.txt` の内容と矛盾がないか確認せよ。
+2. 仕様変更や進捗があった場合、必ずこのファイルの `[PHASE 1]` または `[MEMORY JOURNAL]` を更新せよ。
+3. コードを書いて良いという明示的な許可があるまで、実行コードの提示（Diff）は行わず、設計とドキュメントの整理に徹すること。
