@@ -331,7 +331,10 @@ impl eframe::App for App {
             self.update_title(ctx);
             self.last_title_update_time = now;
         }
+
         let is_focused = ctx.input(|i| i.focused);
+        // ウィンドウがフォーカスを得た瞬間のクリックは無視するためのフラグ
+        let click_allowed = is_focused && self.was_focused;
 
         // ── ターゲット変更の検知 ────────────────────────────────────────
         if self.manager.target_index != self.last_target_index {
@@ -594,7 +597,7 @@ impl eframe::App for App {
                 .show(ctx, |ui| {
                     ui.label("初期設定ファイル(config.ini)を作成しました。");
                     ui.label("主要なショートカットキー：");
-                    ui.label("・「S」：ソートの設定");
+                    ui.label("・「S」：並べ替えの設定");
                     ui.label("・「K」：キーコンフィグ（録画機能付き！）");
                     ui.label("・「E」：外部アプリで開く（設定から変更可能）");
                     ui.add_space(12.0);
@@ -607,8 +610,7 @@ impl eframe::App for App {
 
         // ── ソート設定ウィンドウ ──────────────────────────────────────────
         if self.show_sort_settings {
-            let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space));
-            if widgets::sort_settings_window(ctx, &mut self.show_sort_settings, &mut self.config, &mut self.sort_focus_idx, k.enter, space_pressed) {
+            if widgets::sort_settings_window(ctx, &mut self.show_sort_settings, &mut self.config, &mut self.sort_focus_idx, k.enter) {
                 self.manager.apply_sorting(&self.config);
                 self.manager.clear_cache();
                 self.save_config();
@@ -777,7 +779,7 @@ impl eframe::App for App {
             let is_at_end = self.manager.current >= self.manager.entries.len().saturating_sub(2);
 
             // 描画ロジックを painter に委譲
-            let (_resp, p_action) = painter::draw_main_area(
+            let (resp, p_action) = painter::draw_main_area(
                 ui,
                 &self.manager,
                 mode,

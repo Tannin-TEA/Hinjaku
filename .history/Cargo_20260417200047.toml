@@ -31,7 +31,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Pipes",
     "Win32_UI_Shell",
-    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging_DesktopWindow", # GetActiveWindow のために追加
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_ProcessStatus",
 ] }
@@ -41,6 +41,3 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
-
-[build-dependencies]
-winres = "0.1"

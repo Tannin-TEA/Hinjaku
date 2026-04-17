@@ -1,7 +1,6 @@
 use crate::{archive, integrator, config::{self, Config}, manager::{self, Manager}, utils, painter, widgets, input};
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, TextureHandle};
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 use crate::constants::*;
 
 #[derive(PartialEq, Copy, Clone)]
@@ -65,12 +64,10 @@ pub struct App {
     display_mode: DisplayMode, zoom: f32, manga_mode: bool, manga_shift: bool,
     is_fullscreen: bool,
     is_borderless: bool,
-
-    ipc_rx: Receiver<PathBuf>,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>, config_name: Option<String>, archive_reader: std::sync::Arc<dyn archive::ArchiveReader>, window_title: &str) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>, config_name: Option<String>, archive_reader: std::sync::Arc<dyn archive::ArchiveReader>) -> Self {
         // 日本語フォント
         let mut fonts = FontDefinitions::default();
         // メモリ消費を抑えるため、MS ゴシックなどの比較的軽量なフォントを優先候補に追加
@@ -121,7 +118,6 @@ impl App {
             manga_mode: false, manga_shift: false,
             is_fullscreen: false,
             is_borderless: false,
-            ipc_rx: integrator::install_message_hook(&cc.egui_ctx, window_title),
         };
 
         if let Some(path) = initial_path {
@@ -314,16 +310,6 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
 
-        // ── メッセージ経由のパス受信 ──────────────────────────────────────
-        while let Ok(path) = self.ipc_rx.try_recv() {
-            self.open_path(path, ctx);
-            
-            // 受信時にウィンドウを「強制的に」前面へ（最小化されていても復帰）
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.request_repaint();
-        }
-
         // ── タイトルの更新検知 ──────────────────────────────────────────
         let now = ctx.input(|i| i.time);
         if self.manager.archive_path != self.last_archive_path || now - self.last_title_update_time > 2.0 {
@@ -331,7 +317,10 @@ impl eframe::App for App {
             self.update_title(ctx);
             self.last_title_update_time = now;
         }
+
         let is_focused = ctx.input(|i| i.focused);
+        // ウィンドウがフォーカスを得た瞬間のクリックは無視するためのフラグ
+        let click_allowed = is_focused && self.was_focused;
 
         // ── ターゲット変更の検知 ────────────────────────────────────────
         if self.manager.target_index != self.last_target_index {
@@ -594,7 +583,7 @@ impl eframe::App for App {
                 .show(ctx, |ui| {
                     ui.label("初期設定ファイル(config.ini)を作成しました。");
                     ui.label("主要なショートカットキー：");
-                    ui.label("・「S」：ソートの設定");
+                    ui.label("・「S」：並べ替えの設定");
                     ui.label("・「K」：キーコンフィグ（録画機能付き！）");
                     ui.label("・「E」：外部アプリで開く（設定から変更可能）");
                     ui.add_space(12.0);
@@ -607,8 +596,7 @@ impl eframe::App for App {
 
         // ── ソート設定ウィンドウ ──────────────────────────────────────────
         if self.show_sort_settings {
-            let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space));
-            if widgets::sort_settings_window(ctx, &mut self.show_sort_settings, &mut self.config, &mut self.sort_focus_idx, k.enter, space_pressed) {
+            if widgets::sort_settings_window(ctx, &mut self.show_sort_settings, &mut self.config, &mut self.sort_focus_idx, k.enter) {
                 self.manager.apply_sorting(&self.config);
                 self.manager.clear_cache();
                 self.save_config();
@@ -777,7 +765,7 @@ impl eframe::App for App {
             let is_at_end = self.manager.current >= self.manager.entries.len().saturating_sub(2);
 
             // 描画ロジックを painter に委譲
-            let (_resp, p_action) = painter::draw_main_area(
+            let (resp, p_action) = painter::draw_main_area(
                 ui,
                 &self.manager,
                 mode,
@@ -790,6 +778,15 @@ impl eframe::App for App {
             );
             if let Some(widgets::ViewerAction::NextDir) = p_action { self.go_next_dir(ctx); }
 
+            // クリックによるページ送り判定
+            if click_allowed && resp.secondary_clicked() {
+                self.go_prev(ctx);
+            } else if click_allowed && resp.clicked() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let is_left = pos.x < resp.rect.center().x;
+                    if is_left { self.go_prev(ctx); } else { self.go_next(ctx); }
+                }
+            }
         });
 
         // ── トースト通知の描画 ──────────────────────────────────────────

@@ -331,7 +331,10 @@ impl eframe::App for App {
             self.update_title(ctx);
             self.last_title_update_time = now;
         }
+
         let is_focused = ctx.input(|i| i.focused);
+        // ウィンドウがフォーカスを得た瞬間のクリックは無視するためのフラグ
+        let click_allowed = is_focused && self.was_focused;
 
         // ── ターゲット変更の検知 ────────────────────────────────────────
         if self.manager.target_index != self.last_target_index {
@@ -777,7 +780,7 @@ impl eframe::App for App {
             let is_at_end = self.manager.current >= self.manager.entries.len().saturating_sub(2);
 
             // 描画ロジックを painter に委譲
-            let (_resp, p_action) = painter::draw_main_area(
+            let (resp, p_action) = painter::draw_main_area(
                 ui,
                 &self.manager,
                 mode,

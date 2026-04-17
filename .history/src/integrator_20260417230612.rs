@@ -131,14 +131,13 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
 /// Windowsメッセージをフックしてパス受信を待機する
 pub fn install_message_hook(ctx: &egui::Context, window_title: &str) -> Receiver<PathBuf> {
     let (tx, rx) = mpsc::channel();
-    
-    // OnceLock への値のセット (.set() を使用)
-    let _ = GLOBAL_TX.set(tx);
-    let _ = GLOBAL_CTX.set(ctx.clone());
-
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, FindWindowW};
+
+        GLOBAL_TX = Some(tx);
+        GLOBAL_CTX = Some(ctx.clone());
+        
         // 自身のウィンドウハンドルを取得。
         // タイトルが動的に変わっている可能性があるため、
         // main.rs で生成した起動時のタイトルを使用して特定する。

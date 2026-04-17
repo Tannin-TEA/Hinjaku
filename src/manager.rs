@@ -253,7 +253,7 @@ impl Manager {
         }
     }
 
-    pub fn update(&mut self, ctx: &egui::Context, config: &Config) -> Vec<(usize, String)> {
+    pub fn update(&mut self, ctx: &egui::Context, config: &Config, manga: bool, shift: bool) -> Vec<(usize, String)> {
         // アーカイブリストの取得完了をチェック
         if let Some(rx) = &self.list_rx {
             if let Ok(res) = rx.try_recv() {
@@ -269,7 +269,12 @@ impl Manager {
                             if let Some(focus) = self.pending_focus.take() {
                                 self.current = self.entries.iter().position(|n| n.contains(&focus)).unwrap_or(0);
                             } else {
-                                self.current = if self.open_from_end { self.entries.len().saturating_sub(1) } else { 0 };
+                                self.current = if self.open_from_end {
+                                    let last = self.entries.len().saturating_sub(1);
+                                    if manga && last > 0 {
+                                        if (last % 2 == 0) == shift { last } else { last.saturating_sub(1) }
+                                    } else { last }
+                                } else { 0 };
                             }
                             self.target_index = self.current;
                             // リストが確定したのでプリフェッチを開始

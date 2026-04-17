@@ -1,10 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::OnceLock;
-use eframe::egui;
-
-#[cfg(target_os = "windows")]
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 /// コマンドライン引数を解析して (INI名, 対象パス) を返す
 pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>) {
@@ -53,21 +48,17 @@ const IPC_MSG_ID: usize = 0x484A4B; // "HJK"
 pub fn send_path_via_wm_copydata(_window_title: &str, path: &Path) {
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COPYDATA, EnumWindows, GetWindowTextW, GetWindowThreadProcessId};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COPYDATA, EnumWindows, GetWindowTextW};
         use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
         use windows_sys::Win32::Foundation::{HWND, LPARAM};
-        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        use std::os::windows::ffi::OsStrExt;
 
-        struct Target { hwnd: HWND, found: bool, self_pid: u32 }
-        let mut target = Target { hwnd: std::ptr::null_mut(), found: false, self_pid: unsafe { GetCurrentProcessId() } };
+        struct Target { hwnd: HWND, found: bool }
+        let mut target = Target { hwnd: std::ptr::null_mut(), found: false };
 
         // Hinjakuで始まるタイトルのウィンドウを列挙して探す
         unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
             let target = &mut *(lparam as *mut Target);
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == target.self_pid { return 1; } // 自分自身はスキップ
-
             let mut text = [0u16; 512];
             let len = GetWindowTextW(hwnd, text.as_mut_ptr(), 512);
             if len > 0 {
@@ -98,8 +89,7 @@ pub fn send_path_via_wm_copydata(_window_title: &str, path: &Path) {
     }
 }
 
-static GLOBAL_TX: OnceLock<mpsc::Sender<PathBuf>> = OnceLock::new();
-static GLOBAL_CTX: OnceLock<egui::Context> = OnceLock::new();
+static mut GLOBAL_TX: Option<mpsc::Sender<PathBuf>> = None;
 static mut OLD_WNDPROC: isize = 0;
 
 #[cfg(target_os = "windows")]
@@ -107,20 +97,16 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
     use windows_sys::Win32::UI::WindowsAndMessaging::{WM_COPYDATA, CallWindowProcW};
     use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
     use std::mem::transmute;
+    use std::os::windows::ffi::OsStringExt;
 
     if msg == WM_COPYDATA {
         let cds = lparam as *const COPYDATASTRUCT;
         if !cds.is_null() && (*cds).dwData == IPC_MSG_ID {
             // 受信したバイナリを UTF-16 スライスとして解釈
-            let len = ((*cds).cbData / 2) as usize;
-            let u16_slice = std::slice::from_raw_parts((*cds).lpData as *const u16, len);
+            let u16_slice = std::slice::from_raw_parts((*cds).lpData as *const u16, ((*cds).cbData / 2) as usize);
             let os_str = std::ffi::OsString::from_wide(u16_slice);
-            if let Some(tx) = GLOBAL_TX.get() {
+            if let Some(tx) = GLOBAL_TX.as_ref() {
                 let _ = tx.send(PathBuf::from(os_str));
-                // OSメッセージを受け取った瞬間に egui を叩き起こして update を走らせる
-                if let Some(ctx) = GLOBAL_CTX.get() {
-                    ctx.request_repaint();
-                }
             }
             return 1;
         }
@@ -129,20 +115,20 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
 }
 
 /// Windowsメッセージをフックしてパス受信を待機する
-pub fn install_message_hook(ctx: &egui::Context, window_title: &str) -> Receiver<PathBuf> {
+pub fn install_message_hook(window_title: &str) -> Receiver<PathBuf> {
     let (tx, rx) = mpsc::channel();
-    
-    // OnceLock への値のセット (.set() を使用)
-    let _ = GLOBAL_TX.set(tx);
-    let _ = GLOBAL_CTX.set(ctx.clone());
-
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, FindWindowW};
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        GLOBAL_TX = Some(tx);
+        
         // 自身のウィンドウハンドルを取得。
         // タイトルが動的に変わっている可能性があるため、
         // main.rs で生成した起動時のタイトルを使用して特定する。
-        let title_wide: Vec<u16> = std::ffi::OsStr::new(window_title).encode_wide().chain(Some(0)).collect();
+        let title_wide: Vec<u16> = OsStr::new(window_title).encode_wide().chain(Some(0)).collect();
         let mut hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
         
         // もし見つからない場合は "Hinjaku" 単体で再試行
@@ -170,17 +156,13 @@ pub fn launch_external(exe: &str, args_tmpl: &[String], path_p: &str, path_a: &s
         let operation: Vec<u16> = "open\0".encode_utf16().collect();
         let exe_u16: Vec<u16> = format!("{}\0", exe).encode_utf16().collect();
 
-        // パスを確実に " で囲む（既に囲まれている場合は重ねない）
-        let quote = |s: &str| {
-            let s = s.trim_matches('"');
-            format!("\"{}\"", s)
-        };
-
+        // 引数の組み立て。引数がない場合はパスをダブルクォートで囲って渡す。
+        // Windowsではスペースを含むパスは必ず "" で囲む必要がある。
         let params_str = if args_tmpl.is_empty() {
-            quote(path_p)
+            format!("\"{}\"", path_p)
         } else {
             args_tmpl.iter()
-                .map(|arg| arg.replace("%P", &quote(path_p)).replace("%A", &quote(path_a)))
+                .map(|arg| arg.replace("%P", &format!("\"{}\"", path_p)).replace("%A", &format!("\"{}\"", path_a)))
                 .collect::<Vec<_>>().join(" ")
         };
         let parameters: Vec<u16> = format!("{}\0", params_str).encode_utf16().collect();

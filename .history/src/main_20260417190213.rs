@@ -26,7 +26,7 @@ fn main() -> eframe::Result<()> {
             _mutex_handle = h;
         } else {
             if let Some(path) = path_arg {
-                integrator::send_path_via_wm_copydata("Hinjaku", &path);
+                integrator::send_path_to_existing_instance(&path);
             }
             return Ok(());
         }
@@ -46,7 +46,7 @@ fn main() -> eframe::Result<()> {
     // 4. UI起動設定
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(title.clone())
+            .with_title(title)
             .with_icon(std::sync::Arc::new(integrator::create_h_icon()))
             .with_inner_size([1024.0, 768.0])
             .with_drag_and_drop(true),
@@ -62,15 +62,19 @@ fn main() -> eframe::Result<()> {
     };
 
     let initial_path = path_arg.and_then(|p| utils::clean_path(&p).into()); // utils::clean_path を使用
+    let (ipc_tx, ipc_rx) = std::sync::mpsc::channel();
+
+    // 単一インスタンスモードならサーバーを起動
+    if !config.allow_multiple_instances {
+        integrator::listen_for_opens(ipc_tx);
+    }
 
     eframe::run_native(
         "Hinjaku",
         options,
-        Box::new({
-            let title_clone = title.clone();
-            move |cc| {
+        Box::new(move |cc| {
             let archive_reader = std::sync::Arc::new(archive::DefaultArchiveReader);
-            Box::new(viewer::App::new(cc, initial_path, config_name, archive_reader, &title_clone))
-        }}),
+            Box::new(viewer::App::new(cc, initial_path, config_name, archive_reader, ipc_rx))
+        }),
     )
 }

@@ -50,29 +50,10 @@ pub fn settings_window(
         .collapsible(false)
         .resizable(true)
         .show(ctx, |ui| {
-            // フッターを先に定義して最下段に固定
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.add_space(12.0); // ウィンドウ最下部の余白
-                ui.horizontal(|ui| {
-                    let w = ui.available_width();
-                    ui.add_space((w - 120.0) / 2.0); // ボタン2つ分のセンタリング調整
-                    if ui.button("適用").clicked() {
-                        for i in 0..5 {
-                            config.external_apps[i].args = settings_args_tmp[i].split_whitespace().map(|s| s.to_string()).collect();
-                        }
-                        saved = true;
-                    }
-                    if ui.button("閉じる").clicked() { *show = false; }
-                });
-                ui.add_space(12.0); // ボタン上の余白
-                ui.separator();    // コンテンツとの区切り線
-                ui.small("※ %P はフルパス、%A はフォルダ/アーカイブのパスに置換されます。必要に応じて \"%P\" のように引用符で囲んでください。");
-            });
-
             ui.label("ショートカットキーやメニューから起動するソフトを5つまで設定できます。");
             ui.add_space(8.0);
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
                 for i in 0..5 {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
@@ -98,6 +79,24 @@ pub fn settings_window(
                     });
                 }
             });
+            ui.small("※ %P はフルパス、%A はフォルダ/アーカイブのパスに置換されます。必要に応じて \"%P\" のように引用符で囲んでください。");
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(12.0); // ウィンドウ最下部の余白
+                ui.horizontal(|ui| {
+                    let w = ui.available_width();
+                    ui.add_space((w - 120.0) / 2.0); // ボタン2つ分のセンタリング調整
+                    if ui.button("適用").clicked() {
+                        for i in 0..5 {
+                            config.external_apps[i].args = settings_args_tmp[i].split_whitespace().map(|s| s.to_string()).collect();
+                        }
+                        saved = true;
+                    }
+                    if ui.button("閉じる").clicked() { *show = false; }
+                });
+                ui.add_space(12.0); // ボタン上の余白
+                ui.separator();    // コンテンツとの区切り線
+            });
         });
     saved
 }
@@ -116,14 +115,6 @@ pub fn sort_settings_window(
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .collapsible(false).resizable(true)
         .show(ctx, |ui| {
-            // フッターを先に定義して最下段に固定
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.add_space(12.0);
-                if ui.button("閉じる").clicked() { *show = false; }
-                ui.add_space(12.0);
-                ui.separator();
-            });
-
             let (arr_up, arr_dn, arr_left, arr_right) = ctx.input(|i| (
                 i.key_pressed(egui::Key::ArrowUp),
                 i.key_pressed(egui::Key::ArrowDown),
@@ -201,6 +192,13 @@ pub fn sort_settings_window(
             let check_text = if active { egui::RichText::new("自然順（数字の大きさを考慮）").color(egui::Color32::YELLOW) } else { egui::RichText::new("自然順（数字の大きさを考慮）") };
             if ui.checkbox(&mut config.sort_natural, check_text).changed() { changed = true; }
             if active && (arr_left || arr_right) { config.sort_natural = !config.sort_natural; changed = true; }
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(12.0);
+                if ui.button("閉じる").clicked() { *show = false; }
+                ui.add_space(12.0);
+                ui.separator();
+            });
         });
     changed
 }
@@ -260,14 +258,6 @@ pub fn key_config_window(
         .collapsible(false)
         .resizable(true)
         .show(ctx, |ui| {
-            // フッターを先に定義して最下段に固定
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.add_space(12.0);
-                if ui.button("閉じる").clicked() { *show = false; }
-                ui.add_space(12.0);
-                ui.separator();
-            });
-
             ui.label("各アクションに割り当てるキーを設定します。");
             ui.label("・カンマ区切りで複数指定可能 (例: A, Space)");
             ui.label("・修飾キーは + で連結 (例: Ctrl+R, Alt+Enter)");
@@ -397,6 +387,12 @@ pub fn key_config_window(
                     });
                 }
             });
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(12.0);
+                if ui.button("閉じる").clicked() { *show = false; }
+                ui.add_space(12.0);
+                ui.separator();
+            });
         });
     changed
 }
@@ -427,6 +423,8 @@ pub fn main_menu_bar(
                             ui.close_menu(); action = Some(ViewerAction::OpenExternal(i));
                         }
                     }
+                    ui.separator();
+                    if ui.button("外部アプリ設定…").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenExternalSettings); }
                 });
                 if ui.button("外部アプリ設定…").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenExternalSettings); }
                 ui.separator();

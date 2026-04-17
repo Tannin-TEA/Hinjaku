@@ -1,10 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
-use std::sync::OnceLock;
-use eframe::egui;
-
-#[cfg(target_os = "windows")]
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::sync::mpsc::Sender;
 
 /// コマンドライン引数を解析して (INI名, 対象パス) を返す
 pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>) {
@@ -46,116 +41,93 @@ pub fn check_single_instance() -> Option<isize> {
     { Some(0) }
 }
 
-/// Hinjakuであることを識別するための定数
-const IPC_MSG_ID: usize = 0x484A4B; // "HJK"
-
-/// WM_COPYDATA を使って既存のウィンドウにパスを送信する
-pub fn send_path_via_wm_copydata(_window_title: &str, path: &Path) {
+/// すでに起動しているビューアへ、新しく開きたいパスを送信する
+pub fn send_path_to_existing_instance(path: &Path) -> bool {
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COPYDATA, EnumWindows, GetWindowTextW, GetWindowThreadProcessId};
-        use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
-        use windows_sys::Win32::Foundation::{HWND, LPARAM};
-        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, WriteFile, FlushFileBuffers};
+        use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+        use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, CloseHandle, GetLastError, ERROR_PIPE_BUSY};
 
-        struct Target { hwnd: HWND, found: bool, self_pid: u32 }
-        let mut target = Target { hwnd: std::ptr::null_mut(), found: false, self_pid: unsafe { GetCurrentProcessId() } };
-
-        // Hinjakuで始まるタイトルのウィンドウを列挙して探す
-        unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
-            let target = &mut *(lparam as *mut Target);
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == target.self_pid { return 1; } // 自分自身はスキップ
-
-            let mut text = [0u16; 512];
-            let len = GetWindowTextW(hwnd, text.as_mut_ptr(), 512);
-            if len > 0 {
-                let title = String::from_utf16_lossy(&text[..len as usize]);
-                if title.starts_with("Hinjaku") {
-                    target.hwnd = hwnd;
-                    target.found = true;
-                    return 0; // 中断
-                }
-            }
-            1 // 続行
-        }
-
+        let pipe_name: Vec<u16> = "\\\\.\\pipe\\HinjakuIPC\0".encode_utf16().collect();
         unsafe {
-            EnumWindows(Some(enum_proc), &mut target as *mut _ as _);
-
-            if target.found {
-                // 日本語環境で最も安全な UTF-16 (Wide String) としてエンコード
-                let path_u16: Vec<u16> = path.as_os_str().encode_wide().collect();
-                let cds = COPYDATASTRUCT {
-                    dwData: IPC_MSG_ID,
-                    cbData: (path_u16.len() * 2) as u32, // バイト数なので2倍
-                    lpData: path_u16.as_ptr() as *mut _,
-                };
-                SendMessageW(target.hwnd, WM_COPYDATA, 0, &cds as *const _ as _);
+            let mut handle = INVALID_HANDLE_VALUE;
+            // 接続できるまで最大500ms程度、短いスパンでリトライ（安定性向上）
+            for _ in 0..5 {
+                handle = CreateFileW(
+                    pipe_name.as_ptr(),
+                    GENERIC_WRITE,
+                    0,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    std::ptr::null_mut()
+                );
+                if handle != INVALID_HANDLE_VALUE { break; }
+                if GetLastError() != ERROR_PIPE_BUSY { break; }
+                if WaitNamedPipeW(pipe_name.as_ptr(), 100) == 0 { break; }
             }
+
+            if handle == INVALID_HANDLE_VALUE { return false; }
+            
+            let path_str = path.to_string_lossy().to_string();
+            let bytes = path_str.as_bytes();
+            let mut written = 0;
+            WriteFile(handle, bytes.as_ptr() as _, bytes.len() as u32, &mut written, std::ptr::null_mut());
+            FlushFileBuffers(handle); 
+            CloseHandle(handle);
+            true
         }
     }
+    #[cfg(not(target_os = "windows"))] { false }
 }
 
-static GLOBAL_TX: OnceLock<mpsc::Sender<PathBuf>> = OnceLock::new();
-static GLOBAL_CTX: OnceLock<egui::Context> = OnceLock::new();
-static mut OLD_WNDPROC: isize = 0;
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, msg: u32, wparam: windows_sys::Win32::Foundation::WPARAM, lparam: windows_sys::Win32::Foundation::LPARAM) -> windows_sys::Win32::Foundation::LRESULT {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_COPYDATA, CallWindowProcW};
-    use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
-    use std::mem::transmute;
-
-    if msg == WM_COPYDATA {
-        let cds = lparam as *const COPYDATASTRUCT;
-        if !cds.is_null() && (*cds).dwData == IPC_MSG_ID {
-            // 受信したバイナリを UTF-16 スライスとして解釈
-            let len = ((*cds).cbData / 2) as usize;
-            let u16_slice = std::slice::from_raw_parts((*cds).lpData as *const u16, len);
-            let os_str = std::ffi::OsString::from_wide(u16_slice);
-            if let Some(tx) = GLOBAL_TX.get() {
-                let _ = tx.send(PathBuf::from(os_str));
-                // OSメッセージを受け取った瞬間に egui を叩き起こして update を走らせる
-                if let Some(ctx) = GLOBAL_CTX.get() {
-                    ctx.request_repaint();
-                }
-            }
-            return 1;
-        }
-    }
-    CallWindowProcW(transmute(OLD_WNDPROC), hwnd, msg, wparam, lparam)
-}
-
-/// Windowsメッセージをフックしてパス受信を待機する
-pub fn install_message_hook(ctx: &egui::Context, window_title: &str) -> Receiver<PathBuf> {
-    let (tx, rx) = mpsc::channel();
-    
-    // OnceLock への値のセット (.set() を使用)
-    let _ = GLOBAL_TX.set(tx);
-    let _ = GLOBAL_CTX.set(ctx.clone());
-
+/// 他のインスタンス（2回目以降の起動）から送られてくるパスを待機する
+pub fn listen_for_opens(tx: Sender<PathBuf>) {
     #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, FindWindowW};
-        // 自身のウィンドウハンドルを取得。
-        // タイトルが動的に変わっている可能性があるため、
-        // main.rs で生成した起動時のタイトルを使用して特定する。
-        let title_wide: Vec<u16> = std::ffi::OsStr::new(window_title).encode_wide().chain(Some(0)).collect();
-        let mut hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
-        
-        // もし見つからない場合は "Hinjaku" 単体で再試行
-        if hwnd.is_null() {
-            hwnd = FindWindowW(std::ptr::null(), "Hinjaku\0".encode_utf16().collect::<Vec<_>>().as_ptr());
-        }
+    {
+        std::thread::spawn(move || {
+            use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, ConnectNamedPipe, DisconnectNamedPipe};
+            use windows_sys::Win32::Storage::FileSystem::ReadFile;
+            use windows_sys::Win32::Foundation::{GetLastError, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
 
-        if !hwnd.is_null() {
-            OLD_WNDPROC = GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
-            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as *const () as isize);
-        }
+            // ローカル個人利用に特化した設定
+            const PIPE_ACCESS_INBOUND: u32 = 0x00000001;
+            const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x00080000;
+            const PIPE_TYPE_BYTE: u32 = 0x00000000;
+            const PIPE_READMODE_BYTE: u32 = 0x00000000;
+            const PIPE_WAIT: u32 = 0x00000000;
+            const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x00000008;
+
+            let pipe_name: Vec<u16> = "\\\\.\\pipe\\HinjakuIPC\0".encode_utf16().collect();
+            
+            // 個人利用なのでインスタンスは1つで十分（他はOSのキューに任せる）
+            let handle = unsafe { CreateNamedPipeW(
+                pipe_name.as_ptr(),
+                PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1, 4096, 4096, 0, std::ptr::null()
+            )};
+
+            if handle == INVALID_HANDLE_VALUE { return; }
+
+            loop {
+                // 接続を待機
+                let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+                if connected != 0 || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED {
+                    let mut buffer = [0u8; 4096];
+                    let mut read = 0;
+                    if unsafe { ReadFile(handle, buffer.as_mut_ptr() as _, buffer.len() as u32, &mut read, std::ptr::null_mut()) } != 0 {
+                        if let Ok(path_str) = std::str::from_utf8(&buffer[..read as usize]) {
+                            let _ = tx.send(PathBuf::from(path_str));
+                        }
+                    }
+                }
+                // 次の接続に備えて一旦切断
+                unsafe { DisconnectNamedPipe(handle) };
+            }
+        });
     }
-    rx
 }
 
 /// 外部アプリを起動する
@@ -170,18 +142,14 @@ pub fn launch_external(exe: &str, args_tmpl: &[String], path_p: &str, path_a: &s
         let operation: Vec<u16> = "open\0".encode_utf16().collect();
         let exe_u16: Vec<u16> = format!("{}\0", exe).encode_utf16().collect();
 
-        // パスを確実に " で囲む（既に囲まれている場合は重ねない）
-        let quote = |s: &str| {
-            let s = s.trim_matches('"');
-            format!("\"{}\"", s)
-        };
-
+        // 引数の組み立て。引数がない場合はパスをダブルクォートで囲って渡す。
         let params_str = if args_tmpl.is_empty() {
-            quote(path_p)
+            format!("\"{}\"", path_p)
         } else {
             args_tmpl.iter()
-                .map(|arg| arg.replace("%P", &quote(path_p)).replace("%A", &quote(path_a)))
-                .collect::<Vec<_>>().join(" ")
+                .map(|arg| arg.replace("%P", path_p).replace("%A", path_a))
+                .collect::<Vec<_>>()
+                .join(" ")
         };
         let parameters: Vec<u16> = format!("{}\0", params_str).encode_utf16().collect();
 

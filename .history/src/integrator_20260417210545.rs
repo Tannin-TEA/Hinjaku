@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::OnceLock;
 use eframe::egui;
 
 #[cfg(target_os = "windows")]
@@ -98,8 +97,8 @@ pub fn send_path_via_wm_copydata(_window_title: &str, path: &Path) {
     }
 }
 
-static GLOBAL_TX: OnceLock<mpsc::Sender<PathBuf>> = OnceLock::new();
-static GLOBAL_CTX: OnceLock<egui::Context> = OnceLock::new();
+static mut GLOBAL_TX: Option<mpsc::Sender<PathBuf>> = None;
+static mut GLOBAL_CTX: Option<egui::Context> = None;
 static mut OLD_WNDPROC: isize = 0;
 
 #[cfg(target_os = "windows")]
@@ -115,10 +114,10 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
             let len = ((*cds).cbData / 2) as usize;
             let u16_slice = std::slice::from_raw_parts((*cds).lpData as *const u16, len);
             let os_str = std::ffi::OsString::from_wide(u16_slice);
-            if let Some(tx) = GLOBAL_TX.get() {
+            if let Some(tx) = GLOBAL_TX.as_ref() {
                 let _ = tx.send(PathBuf::from(os_str));
                 // OSメッセージを受け取った瞬間に egui を叩き起こして update を走らせる
-                if let Some(ctx) = GLOBAL_CTX.get() {
+                if let Some(ctx) = GLOBAL_CTX.as_ref() {
                     ctx.request_repaint();
                 }
             }
@@ -131,14 +130,13 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
 /// Windowsメッセージをフックしてパス受信を待機する
 pub fn install_message_hook(ctx: &egui::Context, window_title: &str) -> Receiver<PathBuf> {
     let (tx, rx) = mpsc::channel();
-    
-    // OnceLock への値のセット (.set() を使用)
-    let _ = GLOBAL_TX.set(tx);
-    let _ = GLOBAL_CTX.set(ctx.clone());
-
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, FindWindowW};
+
+        GLOBAL_TX = Some(tx);
+        GLOBAL_CTX = Some(ctx.clone());
+        
         // 自身のウィンドウハンドルを取得。
         // タイトルが動的に変わっている可能性があるため、
         // main.rs で生成した起動時のタイトルを使用して特定する。

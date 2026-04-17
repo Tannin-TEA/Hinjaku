@@ -50,6 +50,8 @@ pub struct Config {
     pub filter_mode: FilterMode,
     /// 複数起動を許可するか
     pub allow_multiple_instances: bool,
+    /// 常に手前に表示するか
+    pub always_on_top: bool,
     /// ソートモード
     pub sort_mode: SortMode,
     /// ソート順
@@ -90,6 +92,7 @@ impl Default for Config {
             ],
             filter_mode: FilterMode::Bilinear,
             allow_multiple_instances: false,
+            always_on_top: false,
             sort_mode: SortMode::Name,
             sort_order: SortOrder::Ascending,
             sort_natural: true,
@@ -160,6 +163,7 @@ pub fn load_config_file(custom_name: Option<&str>) -> (Config, Option<PathBuf>) 
                 cfg.filter_mode = if v == "true" { FilterMode::Bilinear } else { FilterMode::Nearest };
             }
             if let Some(v) = sec.get("AllowMultipleInstances") { cfg.allow_multiple_instances = v == "true"; }
+            if let Some(v) = sec.get("AlwaysOnTop") { cfg.always_on_top = v == "true"; }
             if let Some(v) = sec.get("SortNatural") { cfg.sort_natural = v == "true"; }
             if let Some(v) = sec.get("MangaRtl") { cfg.manga_rtl = v == "true"; }
             if let Some(v) = sec.get("OpenFromEnd") { cfg.open_from_end = v == "true"; }
@@ -218,6 +222,7 @@ pub fn save_config_file(cfg: &Config, path: &std::path::Path) -> Result<()> {
             FilterMode::Lanczos => "Lanczos",
         })
         .set("AllowMultipleInstances", cfg.allow_multiple_instances.to_string())
+        .set("AlwaysOnTop", cfg.always_on_top.to_string())
         .set("SortNatural", cfg.sort_natural.to_string())
         .set("MangaRtl", cfg.manga_rtl.to_string())
         .set("IsFirstRun", cfg.is_first_run.to_string());

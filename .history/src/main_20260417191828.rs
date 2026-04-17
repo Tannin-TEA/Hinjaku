@@ -24,12 +24,7 @@ fn main() -> eframe::Result<()> {
     if !config.allow_multiple_instances {
         if let Some(h) = integrator::check_single_instance() {
             _mutex_handle = h;
-        } else {
-            if let Some(path) = path_arg {
-                integrator::send_path_via_wm_copydata("Hinjaku", &path);
-            }
-            return Ok(());
-        }
+        } else { return Ok(()); }
     }
 
     // ウィンドウタイトルの決定 (デフォルト以外なら設定ファイル名を表示)
@@ -46,7 +41,7 @@ fn main() -> eframe::Result<()> {
     // 4. UI起動設定
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(title.clone())
+            .with_title(title)
             .with_icon(std::sync::Arc::new(integrator::create_h_icon()))
             .with_inner_size([1024.0, 768.0])
             .with_drag_and_drop(true),
@@ -66,11 +61,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Hinjaku",
         options,
-        Box::new({
-            let title_clone = title.clone();
-            move |cc| {
+        Box::new(move |cc| {
             let archive_reader = std::sync::Arc::new(archive::DefaultArchiveReader);
-            Box::new(viewer::App::new(cc, initial_path, config_name, archive_reader, &title_clone))
-        }}),
+            Box::new(viewer::App::new(cc, initial_path, config_name, archive_reader))
+        }),
     )
 }

@@ -46,7 +46,7 @@ fn main() -> eframe::Result<()> {
     // 4. UI起動設定
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(title.clone())
+            .with_title(title)
             .with_icon(std::sync::Arc::new(integrator::create_h_icon()))
             .with_inner_size([1024.0, 768.0])
             .with_drag_and_drop(true),

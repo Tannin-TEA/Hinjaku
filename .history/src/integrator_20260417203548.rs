@@ -1,10 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::OnceLock;
-use eframe::egui;
-
-#[cfg(target_os = "windows")]
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 /// コマンドライン引数を解析して (INI名, 対象パス) を返す
 pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>) {
@@ -98,8 +93,7 @@ pub fn send_path_via_wm_copydata(_window_title: &str, path: &Path) {
     }
 }
 
-static GLOBAL_TX: OnceLock<mpsc::Sender<PathBuf>> = OnceLock::new();
-static GLOBAL_CTX: OnceLock<egui::Context> = OnceLock::new();
+static mut GLOBAL_TX: Option<mpsc::Sender<PathBuf>> = None;
 static mut OLD_WNDPROC: isize = 0;
 
 #[cfg(target_os = "windows")]
@@ -107,6 +101,7 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
     use windows_sys::Win32::UI::WindowsAndMessaging::{WM_COPYDATA, CallWindowProcW};
     use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
     use std::mem::transmute;
+    use std::os::windows::ffi::OsStringExt;
 
     if msg == WM_COPYDATA {
         let cds = lparam as *const COPYDATASTRUCT;
@@ -115,12 +110,8 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
             let len = ((*cds).cbData / 2) as usize;
             let u16_slice = std::slice::from_raw_parts((*cds).lpData as *const u16, len);
             let os_str = std::ffi::OsString::from_wide(u16_slice);
-            if let Some(tx) = GLOBAL_TX.get() {
+            if let Some(tx) = GLOBAL_TX.as_ref() {
                 let _ = tx.send(PathBuf::from(os_str));
-                // OSメッセージを受け取った瞬間に egui を叩き起こして update を走らせる
-                if let Some(ctx) = GLOBAL_CTX.get() {
-                    ctx.request_repaint();
-                }
             }
             return 1;
         }
@@ -129,20 +120,20 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
 }
 
 /// Windowsメッセージをフックしてパス受信を待機する
-pub fn install_message_hook(ctx: &egui::Context, window_title: &str) -> Receiver<PathBuf> {
+pub fn install_message_hook(window_title: &str) -> Receiver<PathBuf> {
     let (tx, rx) = mpsc::channel();
-    
-    // OnceLock への値のセット (.set() を使用)
-    let _ = GLOBAL_TX.set(tx);
-    let _ = GLOBAL_CTX.set(ctx.clone());
-
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, FindWindowW};
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        GLOBAL_TX = Some(tx);
+        
         // 自身のウィンドウハンドルを取得。
         // タイトルが動的に変わっている可能性があるため、
         // main.rs で生成した起動時のタイトルを使用して特定する。
-        let title_wide: Vec<u16> = std::ffi::OsStr::new(window_title).encode_wide().chain(Some(0)).collect();
+        let title_wide: Vec<u16> = OsStr::new(window_title).encode_wide().chain(Some(0)).collect();
         let mut hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
         
         // もし見つからない場合は "Hinjaku" 単体で再試行

@@ -427,6 +427,8 @@ pub fn main_menu_bar(
                             ui.close_menu(); action = Some(ViewerAction::OpenExternal(i));
                         }
                     }
+                    ui.separator();
+                    if ui.button("外部アプリ設定…").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenExternalSettings); }
                 });
                 if ui.button("外部アプリ設定…").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenExternalSettings); }
                 ui.separator();
