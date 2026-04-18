@@ -1,15 +1,18 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use eframe::egui;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 /// コマンドライン引数を解析して (INI名, 対象パス) を返す
-pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>) {
+pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>, bool, Option<String>) {
     let mut config_name = None;
     let mut path_arg = None;
+    let mut debug_mode = false;
+    let mut renderer_override = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -19,6 +22,18 @@ pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>) {
                     i += 2;
                 } else { i += 1; }
             }
+            "-d" | "--debug" => {
+                debug_mode = true;
+                i += 1;
+            }
+            "-W" => {
+                renderer_override = Some("wgpu".to_string());
+                i += 1;
+            }
+            "-O" => {
+                renderer_override = Some("glow".to_string());
+                i += 1;
+            }
             _ if !args[i].starts_with('-') && path_arg.is_none() => {
                 path_arg = Some(PathBuf::from(&args[i]));
                 i += 1;
@@ -26,7 +41,7 @@ pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>) {
             _ => i += 1,
         }
     }
-    (config_name, path_arg)
+    (config_name, path_arg, debug_mode, renderer_override)
 }
 
 /// Windows環境での二重起動防止チェック
@@ -44,6 +59,18 @@ pub fn check_single_instance() -> Option<isize> {
     }
     #[cfg(not(target_os = "windows"))]
     { Some(0) }
+}
+
+/// WindowsのGUIアプリとして起動しつつ、起動元のコンソールに出力できるようにする
+pub fn setup_console() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // 親プロセスのコンソールへのアタッチを試みる（ターミナルから起動された場合など）
+        if windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS) == 0 {
+            // 失敗した場合は新しくコンソールウィンドウを割り当てる（エクスプローラから起動された場合など）
+            windows_sys::Win32::System::Console::AllocConsole();
+        }
+    }
 }
 
 /// Hinjakuであることを識別するための定数
@@ -100,7 +127,7 @@ pub fn send_path_via_wm_copydata(_window_title: &str, path: &Path) {
 
 static GLOBAL_TX: OnceLock<mpsc::Sender<PathBuf>> = OnceLock::new();
 static GLOBAL_CTX: OnceLock<egui::Context> = OnceLock::new();
-static mut OLD_WNDPROC: isize = 0;
+static OLD_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, msg: u32, wparam: windows_sys::Win32::Foundation::WPARAM, lparam: windows_sys::Win32::Foundation::LPARAM) -> windows_sys::Win32::Foundation::LRESULT {
@@ -125,7 +152,7 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
             return 1;
         }
     }
-    CallWindowProcW(transmute(OLD_WNDPROC), hwnd, msg, wparam, lparam)
+    CallWindowProcW(transmute(OLD_WNDPROC.load(Ordering::SeqCst)), hwnd, msg, wparam, lparam)
 }
 
 /// Windowsメッセージをフックしてパス受信を待機する
@@ -151,7 +178,7 @@ pub fn install_message_hook(ctx: &egui::Context, window_title: &str) -> Receiver
         }
 
         if !hwnd.is_null() {
-            OLD_WNDPROC = GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+            OLD_WNDPROC.store(GetWindowLongPtrW(hwnd, GWLP_WNDPROC), Ordering::SeqCst);
             SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as *const () as isize);
         }
     }
@@ -279,16 +306,6 @@ pub fn create_h_icon() -> eframe::egui::IconData {
     eframe::egui::IconData { rgba, width: size as u32, height: size as u32 }
 }
 
-/// 秒（UNIXタイム）を yyyy/mm/dd 形式の文字列に変換する (chrono 依存排除用)
-pub fn format_timestamp(secs: u64) -> String {
-    if secs == 0 { return "----/--/--".to_string(); }
-    let days = secs / 86400;
-    let year = 1970 + (days / 365); // 概算。ソート基準として秒単位の数値(mtime)は保持されているため表示用。
-    let month = ((days % 365) / 30) + 1;
-    let day = (days % 30) + 1;
-    format!("{:04}/{:02}/{:02}", year, month.min(12), day.min(31))
-}
-
 /// 現在のプロセスのメモリ使用量（ワーキングセット）を文字列で取得する
 pub fn get_memory_usage_str() -> String {
     #[cfg(target_os = "windows")]
@@ -306,4 +323,41 @@ pub fn get_memory_usage_str() -> String {
         }
     }
     "--- MB".to_string()
+}
+
+/// Windowsのメモリマッピングを使用してフォントファイルを読み込む
+/// 物理メモリへのコピーを避け、OSのページキャッシュに管理を委ねる
+#[cfg(target_os = "windows")]
+pub fn mmap_font_file(path: &str) -> Option<&'static [u8]> {
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, GetFileSizeEx};
+    use windows_sys::Win32::System::Memory::{CreateFileMappingW, MapViewOfFile, PAGE_READONLY, FILE_MAP_READ};
+    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, CloseHandle, GENERIC_READ};
+
+    unsafe {
+        let path_u16: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        let handle = CreateFileW(path_u16.as_ptr(), GENERIC_READ, FILE_SHARE_READ, std::ptr::null(), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, std::ptr::null_mut());
+        if handle == INVALID_HANDLE_VALUE { return None; }
+
+        let mut size = 0i64;
+        if GetFileSizeEx(handle, &mut size) == 0 {
+            CloseHandle(handle);
+            return None;
+        }
+
+        let mapping = CreateFileMappingW(handle, std::ptr::null(), PAGE_READONLY, 0, 0, std::ptr::null());
+        if mapping == std::ptr::null_mut() {
+            CloseHandle(handle);
+            return None;
+        }
+
+        let ptr = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+        if ptr.Value.is_null() {
+            CloseHandle(mapping);
+            CloseHandle(handle);
+            return None;
+        }
+
+        // アプリ起動中はずっと使用するため、ハンドルをリーク（保持）させて静的参照として返す
+        Some(std::slice::from_raw_parts(ptr.Value as *const u8, size as usize))
+    }
 }

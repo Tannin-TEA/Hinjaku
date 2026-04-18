@@ -37,6 +37,10 @@ pub struct App {
     settings_args_tmp: Vec<String>,
     /// config.ini のパス保持
     config_path: Option<PathBuf>,
+    /// デバッグ画面の表示状態
+    show_debug: bool,
+    /// バージョン・ライセンス情報の表示状態
+    show_about: bool,
 
     /// アーカイブ切り替え中で、最初の画像がロードされるのを待っている状態か
     is_loading_archive: bool,
@@ -52,6 +56,12 @@ pub struct App {
     last_display_change_time: f64,
     /// 最後にタイトルを更新した時刻
     last_title_update_time: f64,
+    /// 最後にコンソールへログを出力した時刻
+    last_debug_log_time: f64,
+    /// 最後にウィンドウサイズを明示的に変更した時刻（干渉防止用）
+    last_resize_time: f64,
+    /// コマンドラインからのデバッグフラグ
+    debug_cli: bool,
 
     last_target_index: usize,
     last_archive_path: Option<PathBuf>,
@@ -70,13 +80,15 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>, config_name: Option<String>, archive_reader: std::sync::Arc<dyn archive::ArchiveReader>, window_title: &str) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>, config_name: Option<String>, archive_reader: std::sync::Arc<dyn archive::ArchiveReader>, window_title: &str, debug_cli: bool) -> Self {
         // 日本語フォント
         let mut fonts = FontDefinitions::default();
         // メモリ消費を抑えるため、MS ゴシックなどの比較的軽量なフォントを優先候補に追加
-        for font_path in &["C:\\Windows\\Fonts\\msgothic.ttc", "C:\\Windows\\Fonts\\meiryo.ttc", "C:\\Windows\\Fonts\\msjh.ttc"] {
-            if let Ok(bytes) = std::fs::read(font_path) {
-                fonts.font_data.insert("japanese".to_owned(), FontData::from_owned(bytes));
+        let font_candidates = ["C:\\Windows\\Fonts\\msgothic.ttc", "C:\\Windows\\Fonts\\meiryo.ttc", "C:\\Windows\\Fonts\\msjh.ttc"];
+        for path in &font_candidates {
+            #[cfg(target_os = "windows")]
+            if let Some(data) = integrator::mmap_font_file(path) {
+                fonts.font_data.insert("japanese".to_owned(), FontData::from_static(data));
                 fonts.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, "japanese".to_owned());
                 fonts.families.get_mut(&FontFamily::Monospace).unwrap().insert(0, "japanese".to_owned());
                 break;
@@ -84,8 +96,29 @@ impl App {
         }
         cc.egui_ctx.set_fonts(fonts);
 
+        // テクスチャアトラスや描画負荷の軽減設定
+        cc.egui_ctx.options_mut(|opt| {
+            // 境界のボケ（フェザリング）を無効にして描画バッファと計算量を節約
+            opt.tessellation_options.feathering = false;
+        });
+        // 高DPI環境でのテクスチャ肥大化を防ぐ（1.0に固定。UIは小さくなるがメモリには優しい）
+        cc.egui_ctx.set_pixels_per_point(1.0);
+
         let (config, config_path) = config::load_config_file(config_name.as_deref());
         let settings_args_tmp = config.external_apps.iter().map(|app| app.args.join(" ")).collect();
+
+        // 1.0固定のスケーリングを適用した状態で、保存されていた位置とサイズを再適用する
+        // (eframeの初期化時点ではOSのスケーリングが効いている可能性があるため)
+        if !config.window_maximized {
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                config.window_width,
+                config.window_height,
+            )));
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                config.window_x,
+                config.window_y,
+            )));
+        }
 
         // 設定値を反映
         let mut manager = Manager::new(cc.egui_ctx.clone(), archive_reader);
@@ -107,12 +140,17 @@ impl App {
             sort_focus_idx: 0,
             settings_args_tmp,
             config_path,
+            show_debug: false,
+            show_about: false,
             is_loading_archive: false,
             folder_lock_until: 0.0,
             page_lock_until: 0.0,
             loading_retry_count: 0,
             last_display_change_time: 0.0,
             last_title_update_time: 0.0,
+            last_debug_log_time: 0.0,
+            last_resize_time: 0.0,
+            debug_cli,
             last_target_index: 0,
             last_archive_path: None,
             was_focused: true,
@@ -131,22 +169,6 @@ impl App {
         app
     }
 
-    fn update_title(&self, ctx: &egui::Context) {
-        let config_name = self.config_path.as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "config.ini".to_string());
-
-        let folder_name = self.manager.archive_path.as_ref()
-            .map(|p| utils::get_display_name(p))
-            .unwrap_or_else(|| "---".to_string());
-
-        let mem_str = integrator::get_memory_usage_str();
-
-        let title = format!("Hinjaku {{{}}} - {} - [{}]", config_name, folder_name, mem_str);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
-    }
-
     fn get_texture(&self, index: usize) -> Option<&TextureHandle> {
         self.manager.get_first_tex(index)
     }
@@ -163,6 +185,16 @@ impl App {
 
     fn open_path(&mut self, path: PathBuf, ctx: &egui::Context) {
         self.error = None;
+        
+        // 最近開いたパスの履歴を更新 (最大10件)
+        let path_str = path.to_string_lossy().into_owned();
+        self.config.recent_paths.retain(|p| p != &path_str);
+        self.config.recent_paths.insert(0, path_str);
+        if self.config.recent_paths.len() > 10 {
+            self.config.recent_paths.pop();
+        }
+        self.save_config();
+
         self.manager.open_path(path, &self.config);
         
         // ツリーのノードキャッシュが1000件を超えたら一度リセットしてメモリを節約する
@@ -188,7 +220,7 @@ impl App {
                 self.manager.invalidate_cache_for(idx, &name);
             }
         }
-        self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode, image::MAX_TEX_DIM);
         ctx.request_repaint();
     }
 
@@ -238,24 +270,50 @@ impl App {
         false
     }
 
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if self.manager.archive_path == self.last_archive_path && now - self.last_title_update_time <= 2.0 {
+            return;
+        }
+        self.last_archive_path = self.manager.archive_path.clone();
+        self.last_title_update_time = now;
+
+        let renderer_str = match self.config.renderer {
+            config::RendererMode::Glow => "OpenGL",
+            config::RendererMode::Wgpu => "Wgpu",
+        };
+        let config_part = self.config_path.as_ref()
+            .and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| n != "config.ini").map(|n| format!(" {{{}}}", n)).unwrap_or_default();
+
+        let folder_name = self.manager.archive_path.as_ref()
+            .map(|p| utils::get_display_name(p)).unwrap_or_else(|| "---".to_string());
+
+        let title = format!("Hinjaku - {}{} - {} - [{}]", renderer_str, config_part, folder_name, integrator::get_memory_usage_str());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+    }
+
     fn go_single_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.folder_lock_until = 0.0; self.page_lock_until = 0.0;
-        if !self.manager.go_prev(false, false, self.config.filter_mode) { self.go_prev_dir(ctx); }
+        self.display_mode = DisplayMode::Fit;
+        if !self.manager.go_prev(false, false, self.config.filter_mode, image::MAX_TEX_DIM) { self.go_prev_dir(ctx); }
         else { ctx.request_repaint(); }
     }
 
     fn go_single_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.folder_lock_until = 0.0; self.page_lock_until = 0.0;
-        if !self.manager.go_next(false, false, self.config.filter_mode) { self.go_next_dir(ctx); }
+        self.display_mode = DisplayMode::Fit;
+        if !self.manager.go_next(false, false, self.config.filter_mode, image::MAX_TEX_DIM) { self.go_next_dir(ctx); }
         else { ctx.request_repaint(); }
     }
 
     fn go_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.folder_lock_until = 0.0; self.page_lock_until = 0.0;
-        if !self.manager.go_prev(self.manga_mode, self.manga_shift, self.config.filter_mode) {
+        self.display_mode = DisplayMode::Fit;
+        if !self.manager.go_prev(self.manga_mode, self.manga_shift, self.config.filter_mode, image::MAX_TEX_DIM) {
             self.go_prev_dir(ctx);
         } else { ctx.request_repaint(); }
     }
@@ -263,7 +321,8 @@ impl App {
     fn go_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.folder_lock_until = 0.0; self.page_lock_until = 0.0;
-        if !self.manager.go_next(self.manga_mode, self.manga_shift, self.config.filter_mode) {
+        self.display_mode = DisplayMode::Fit;
+        if !self.manager.go_next(self.manga_mode, self.manga_shift, self.config.filter_mode, image::MAX_TEX_DIM) {
             self.go_next_dir(ctx);
         } else { ctx.request_repaint(); }
     }
@@ -271,15 +330,17 @@ impl App {
     fn go_first(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.folder_lock_until = 0.0; self.page_lock_until = 0.0;
-        self.manager.target_index = 0; self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode); ctx.request_repaint();
+        self.display_mode = DisplayMode::Fit;
+        self.manager.target_index = 0; self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode, image::MAX_TEX_DIM); ctx.request_repaint();
     }
 
     fn go_last(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.folder_lock_until = 0.0; self.page_lock_until = 0.0;
+        self.display_mode = DisplayMode::Fit;
         let last = self.manager.entries.len().saturating_sub(1);
         self.manager.target_index = if self.manga_mode && last > 0 && last % 2 == 0 { last.saturating_sub(1) } else { last };
-        self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode); ctx.request_repaint();
+        self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode, image::MAX_TEX_DIM); ctx.request_repaint();
     }
 
     fn add_toast(&mut self, msg: String, ctx: &egui::Context) {
@@ -309,517 +370,373 @@ impl App {
             }
         }
     }
-}
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-
-        // ── メッセージ経由のパス受信 ──────────────────────────────────────
-        while let Ok(path) = self.ipc_rx.try_recv() {
-            self.open_path(path, ctx);
-            
-            // 受信時にウィンドウを「強制的に」前面へ（最小化されていても復帰）
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.request_repaint();
-        }
-
-        // ── タイトルの更新検知 ──────────────────────────────────────────
+    fn update_window_state(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        if self.manager.archive_path != self.last_archive_path || now - self.last_title_update_time > 2.0 {
-            self.last_archive_path = self.manager.archive_path.clone();
-            self.update_title(ctx);
-            self.last_title_update_time = now;
-        }
-        let is_focused = ctx.input(|i| i.focused);
+        let viewport_info = ctx.input(|i| i.viewport().clone());
+        let maximized = viewport_info.maximized.unwrap_or(false);
+        let minimized = viewport_info.minimized.unwrap_or(false);
+        let fullscreen = viewport_info.fullscreen.unwrap_or(false);
 
-        // ── ターゲット変更の検知 ────────────────────────────────────────
-        if self.manager.target_index != self.last_target_index {
-            self.last_target_index = self.manager.target_index;
-            self.loading_retry_count = 0; // ページが変わったらリトライカウントをリセット
+        // フルスクリーン時は「最大化」として保存しない
+        if !fullscreen {
+            self.config.window_maximized = maximized;
         }
 
-        // ── バックグラウンド結果を回収 ──────────────────────────────────
+        // 通常状態（最大化・最小化・フルスクリーンではない）の時のみ、座標とサイズを記録する
+        if !maximized && !minimized && !fullscreen && (self.last_resize_time == 0.0 || now - self.last_resize_time > 0.5) {
+            if let Some(rect) = viewport_info.outer_rect {
+                // スクリーン座標上のウィンドウ位置
+                self.config.window_x = rect.min.x;
+                self.config.window_y = rect.min.y;
+            }
+            if let Some(rect) = viewport_info.inner_rect {
+                // eframe::NativeOptions が期待する「描画領域のサイズ」
+                if rect.width() > 10.0 && rect.height() > 10.0 {
+                    self.config.window_width = rect.width();
+                    self.config.window_height = rect.height();
+                }
+            }
+        }
+    }
+
+    fn handle_debug_logging(&mut self, ctx: &egui::Context) {
+        if !self.debug_cli { return; }
+        let now = ctx.input(|i| i.time);
+        if now - self.last_debug_log_time > 1.0 {
+            println!("\n--- Debug Stats ({:.1}s) ---", now);
+            println!("Memory: {}", integrator::get_memory_usage_str());
+            println!("Cache: {} items ({} KB)", self.manager.cache_len(), self.manager.total_cache_size_bytes() / 1024);
+            self.last_debug_log_time = now;
+        }
+    }
+
+    fn process_manager_update(&mut self, ctx: &egui::Context) {
         let failures = self.manager.update(ctx, &self.config, self.manga_mode, self.manga_shift);
         for (idx, err) in failures {
-            // 目標のページ、またはマンガモード時の隣のページがエラーなら停止
-            let target = self.manager.target_index;
-            if idx == target || (self.manga_mode && idx == target + 1) {
+            if idx == self.manager.target_index || (self.manga_mode && idx == self.manager.target_index + 1) {
                 self.error = Some(err);
                 self.is_loading_archive = false;
             }
         }
+        if self.manager.target_index != self.last_target_index {
+            self.last_target_index = self.manager.target_index;
+            self.loading_retry_count = 0;
+        }
+        self.sync_display_to_target(ctx);
+        if self.error.is_some() || (self.manager.entries.is_empty() && !self.manager.is_listing) {
+            self.is_loading_archive = false;
+        }
+    }
 
-        // ── ページ同期（目標ページの準備ができていたら表示を更新） ──────
+    fn sync_display_to_target(&mut self, ctx: &egui::Context) {
         let target = self.manager.target_index;
         if self.is_loading_archive || self.manager.current != target {
             let mut is_ready = false;
             if let Some(tex1) = self.get_texture(target) {
                 if self.manga_mode {
                     let s1 = tex1.size_vec2();
-                    // 2枚目が必要な条件: 1枚目が見開きでない 且つ (シフト中 または 2枚目以降) 且つ 次のページが存在
-                    let needs_2nd = s1.x <= s1.y 
-                        && (self.manga_shift || target > 0) 
-                        && target + 1 < self.manager.entries.len();
-                    
-                    if needs_2nd {
-                        if self.get_texture(target + 1).is_some() {
-                            is_ready = true;
-                        }
-                    } else {
-                        is_ready = true; // 1枚のみで完結するケース
-                    }
-                } else {
-                    is_ready = true; // 通常モード
-                }
+                    let needs_2nd = s1.x <= s1.y && (self.manga_shift || target > 0) && target + 1 < self.manager.entries.len();
+                    if !needs_2nd || self.get_texture(target + 1).is_some() { is_ready = true; }
+                } else { is_ready = true; }
             }
-
             if is_ready {
                 let was_loading = self.is_loading_archive;
                 self.manager.current = target;
                 self.error = None;
                 self.is_loading_archive = false;
-                self.loading_retry_count = 0;
                 let now = ctx.input(|i| i.time);
-                self.last_display_change_time = now;
-
-                if was_loading {
-                    // フォルダ/アーカイブを開いた直後のみ、専用の長いウェイトをかける
-                    self.folder_lock_until = now + ui::FOLDER_NAV_GUARD_DURATION;
-                } else {
-                    // 通常のページめくり（上下1ページ送り含む）完了時にも短いウェイトをかける
-                    self.page_lock_until = now + ui::PAGE_NAV_GUARD_DURATION;
-                }
+                self.folder_lock_until = if was_loading { now + ui::FOLDER_NAV_GUARD_DURATION } else { 0.0 };
+                self.page_lock_until = if !was_loading { now + ui::PAGE_NAV_GUARD_DURATION } else { 0.0 };
             } else if self.loading_retry_count < loading::LOADING_MAX_RETRIES {
-                // 15ms間隔で最大3回だけ自動リフレッシュ（バックグラウンド通知の予備）
                 self.loading_retry_count += 1;
                 ctx.request_repaint_after(std::time::Duration::from_millis(loading::LOADING_RETRY_DELAY_MS));
             }
         }
+    }
 
-        // エラー時や画像がない時はロックを解除する
-        if self.error.is_some() || (self.manager.entries.is_empty() && !self.manager.is_listing) {
-            self.is_loading_archive = false;
+    fn handle_input(&mut self, ctx: &egui::Context, k: &input::KeyboardState) {
+        let is_typing = ctx.wants_keyboard_input();
+        let is_capturing = self.capturing_key_for.is_some();
+        let modal_open = self.show_settings || self.show_key_config || self.config.is_first_run || self.show_sort_settings;
+
+        if self.show_tree && !modal_open && !is_typing && !is_capturing {
+            self.handle_tree_navigation(ctx, k);
+        } else if !modal_open && !is_typing && !is_capturing {
+            self.handle_viewer_keys(ctx, k);
+            self.handle_mouse_input(ctx);
+        }
+        if !modal_open && k.esc { self.exit_fullscreen(ctx); }
+    }
+
+    fn handle_tree_navigation(&mut self, ctx: &egui::Context, k: &input::KeyboardState) {
+        let old = self.manager.tree.selected.clone();
+        if k.up { self.manager.tree.move_selection(-1); }
+        if k.dn { self.manager.tree.move_selection(1); }
+        if k.right { self.manager.tree.expand_current(); }
+        if k.left { self.manager.tree.collapse_or_up(); }
+        if self.manager.tree.selected != old {
+            if let Some(p) = self.manager.tree.selected.clone() { self.open_path(p, ctx); }
+        }
+        if k.enter {
+            if let Some(p) = self.manager.tree.activate_current() {
+                let has = self.manager.tree.get_image_count(&p) > 0;
+                self.open_path(p, ctx);
+                if has { self.show_tree = false; }
+            }
+        }
+        if k.esc { self.show_tree = false; }
+        if k.toggle_tree { self.show_tree = false; }
+    }
+
+    fn handle_viewer_keys(&mut self, ctx: &egui::Context, k: &input::KeyboardState) {
+        if k.prev_page { self.go_prev(ctx); }
+        if k.next_page { self.go_next(ctx); }
+        if k.prev_page_single { self.go_single_prev(ctx); }
+        if k.next_page_single { self.go_single_next(ctx); }
+        if k.first_page { self.go_first(ctx); }
+        if k.last_page { self.go_last(ctx); }
+        if k.toggle_fit { self.handle_action(ctx, widgets::ViewerAction::SetDisplayMode(match self.display_mode { DisplayMode::Fit => DisplayMode::WindowFit, DisplayMode::WindowFit => DisplayMode::Manual, DisplayMode::Manual => DisplayMode::Fit })); }
+        if k.zoom_in { self.handle_action(ctx, widgets::ViewerAction::ZoomIn); }
+        if k.zoom_out { self.handle_action(ctx, widgets::ViewerAction::ZoomOut); }
+        if k.rcw { self.rotate_current(true, ctx); }
+        if k.rccw { self.rotate_current(false, ctx); }
+        if k.prev_dir { self.go_prev_dir(ctx); }
+        if k.next_dir { self.go_next_dir(ctx); }
+        if k.toggle_manga { self.handle_action(ctx, widgets::ViewerAction::ToggleManga); }
+        if k.toggle_rtl { self.handle_action(ctx, widgets::ViewerAction::ToggleMangaRtl); }
+        if k.toggle_linear { self.handle_action(ctx, widgets::ViewerAction::ToggleLinear); }
+        if k.toggle_bg { self.handle_action(ctx, widgets::ViewerAction::SetBgMode(match self.config.bg_mode { config::BackgroundMode::Theme => config::BackgroundMode::Checkerboard, config::BackgroundMode::Checkerboard => config::BackgroundMode::Black, config::BackgroundMode::Black => config::BackgroundMode::Gray, config::BackgroundMode::Gray => config::BackgroundMode::White, config::BackgroundMode::White => config::BackgroundMode::Green, config::BackgroundMode::Green => config::BackgroundMode::Theme })); }
+        if k.toggle_debug { self.show_debug = !self.show_debug; }
+        if k.bs { if let Some(p) = &self.manager.archive_path { if let Err(e) = integrator::reveal_in_explorer(p) { self.error = Some(e); } } }
+        if k.open_external_1 { self.open_external(0, ctx); }
+        if k.quit { self.handle_action(ctx, widgets::ViewerAction::Exit); }
+        if k.fullscreen { self.toggle_fullscreen(ctx); }
+        if k.borderless { self.toggle_borderless(ctx); }
+        if k.open_key_config { self.show_key_config = true; }
+        if k.sort_settings {
+            if self.show_sort_settings {
+                self.manager.apply_sorting(&self.config);
+                self.manager.clear_cache();
+                self.save_config();
+            }
+            self.show_sort_settings = !self.show_sort_settings;
+            if self.show_sort_settings { self.sort_focus_idx = 0; }
+        }
+        if k.toggle_tree { self.show_tree = !self.show_tree; if self.show_tree { self.sync_tree_to_current(); } }
+    }
+
+    fn handle_mouse_input(&mut self, ctx: &egui::Context) {
+        let (wheel, ctrl, secondary) = ctx.input(|i| (i.smooth_scroll_delta.y, i.modifiers.ctrl, i.pointer.button_down(egui::PointerButton::Secondary)));
+        if wheel != 0.0 {
+            if ctrl || secondary {
+                self.zoom = (self.zoom * (1.0 + wheel * ui::WHEEL_ZOOM_SENSITIVITY)).clamp(ui::MIN_ZOOM, ui::MAX_ZOOM);
+                self.display_mode = DisplayMode::Manual;
+            } else {
+                self.wheel_accumulator += wheel;
+                if self.wheel_accumulator.abs() >= ui::WHEEL_NAV_THRESHOLD {
+                    if self.wheel_accumulator > 0.0 { self.go_prev(ctx); } else { self.go_next(ctx); }
+                    self.display_mode = DisplayMode::Fit; self.wheel_accumulator = 0.0;
+                }
+            }
+        } else { self.wheel_accumulator = 0.0; }
+        ctx.input(|i| {
+            if i.pointer.button_pressed(egui::PointerButton::Extra1) { self.go_prev(ctx); }
+            if i.pointer.button_pressed(egui::PointerButton::Extra2) { self.go_next(ctx); }
+        });
+    }
+
+    fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        self.is_fullscreen = !self.is_fullscreen; self.is_borderless = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.is_fullscreen));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.is_fullscreen));
+    }
+
+    fn toggle_borderless(&mut self, ctx: &egui::Context) {
+        self.is_borderless = !self.is_borderless; self.is_fullscreen = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.is_borderless));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.is_borderless));
+    }
+
+    fn exit_fullscreen(&mut self, ctx: &egui::Context) {
+        self.is_fullscreen = false; self.is_borderless = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+    }
+
+    fn draw_ui(&mut self, ctx: &egui::Context) {
+        self.draw_windows(ctx);
+        let menu_act = widgets::main_menu_bar(ctx, &self.config, &self.manager, self.display_mode, self.manga_mode, self.show_tree, self.show_debug);
+        let mut tree_req = None;
+        if self.show_tree {
+            egui::SidePanel::left("tree")
+                .resizable(true)
+                .default_width(ctx.screen_rect().width() * 0.5)
+                .max_width(ctx.screen_rect().width() * 0.5)
+                .show(ctx, |ui| widgets::sidebar_ui(ui, &mut self.manager.tree, &self.manager.archive_path, ctx, &mut tree_req));
+            self.manager.tree.scroll_to_selected = false;
+        }
+        let tool_act = widgets::bottom_toolbar(ctx, &self.manager, &self.config, self.display_mode, self.zoom, self.manga_mode, self.is_nav_locked(ctx));
+        if let Some(act) = menu_act.or(tool_act) { self.handle_action(ctx, act); }
+        if let Some(p) = tree_req { self.open_path(p, ctx); }
+        self.draw_main_panel(ctx);
+        self.draw_toasts(ctx);
+    }
+
+    fn draw_windows(&mut self, ctx: &egui::Context) {
+        if self.show_settings && widgets::settings_window(ctx, &mut self.show_settings, &mut self.config, &mut self.settings_args_tmp) { self.save_config(); }
+        if self.show_key_config {
+            if let Some(id) = self.capturing_key_for.clone() { if let Some(c) = input::detect_key_combination(ctx) { self.config.keys.insert(id, c); self.capturing_key_for = None; self.save_config(); } }
+            if widgets::key_config_window(ctx, &mut self.show_key_config, &mut self.config, &mut self.capturing_key_for) { self.save_config(); }
+        }
+        if self.config.is_first_run {
+            egui::Window::new("Hinjaku へようこそ")
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("設定ファイル (config.ini) を作成しました。").strong());
+                        ui.add_space(8.0);
+                        ui.label("吹けば飛ぶよな軽量ビューア");
+                        ui.add_space(8.0);
+                        ui.group(|ui| {
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.label(" [ 主な操作ショートカット ] ");
+                                ui.label("・ < / > (P / N) : ページ移動");
+                                ui.label("・ F : フィットモード切替");
+                                ui.label("・ M / Space : マンガモード(見開き)切替");
+                                ui.label("・ T : ディレクトリツリー表示");
+                            });
+                        });
+                        ui.add_space(8.0);
+                        ui.label("詳細な設定やキーの変更はメニューの「オプション」から行えます。");
+                        ui.add_space(12.0);
+                        if ui.button(egui::RichText::new("はじめる").size(18.0)).clicked() {
+                            self.config.is_first_run = false;
+                            self.save_config();
+                        }
+                    });
+                });
+        }
+        if self.show_sort_settings {
+            widgets::sort_settings_window(ctx, &mut self.show_sort_settings, &mut self.config, &mut self.sort_focus_idx, false, ctx.input(|i| i.key_pressed(egui::Key::Space)));
+            if !self.show_sort_settings {
+                self.manager.apply_sorting(&self.config);
+                self.manager.clear_cache();
+                self.save_config();
+            }
+        }
+        if self.show_debug { widgets::debug_window(ctx, &mut self.show_debug, &self.manager); }
+        if self.show_about { widgets::about_window(ctx, &mut self.show_about); }
+    }
+
+    fn draw_main_panel(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            painter::paint_background(ui, ui.available_rect_before_wrap(), self.config.bg_mode);
+            if let Some(err) = self.error.clone() { ui.centered_and_justified(|ui| ui.label(egui::RichText::new(format!("エラー: {err}")).color(egui::Color32::RED))); return; }
+            if self.get_texture(self.manager.current).is_none() { self.draw_loading_screen(ui, ctx); return; }
+            let is_at_end = self.manager.current >= self.manager.entries.len().saturating_sub(2);
+            let (_, act) = painter::draw_main_area(ui, &self.manager, self.display_mode, self.zoom, self.manga_mode, self.config.manga_rtl, self.manga_shift, ctx, is_at_end);
+            if let Some(widgets::ViewerAction::NextDir) = act { self.go_next_dir(ctx); }
+        });
+    }
+
+    fn draw_loading_screen(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.centered_and_justified(|ui| {
+            if self.manager.entries.is_empty() && !self.manager.is_listing {
+                ui.vertical_centered(|ui| {
+                    let faint_color = ui.visuals().weak_text_color().linear_multiply(0.1);
+                    ui.label(egui::RichText::new("H").size(140.0).strong().color(faint_color));
+                    ui.add_space(8.0);
+                    ui.label("フォルダやアーカイブをドラッグ＆ドロップしてください。");
+                    if let Some(p) = &self.manager.archive_path { if let Some(parent) = p.parent() { if ui.button("一つ上の階層へ").clicked() { let c = p.clone(); self.move_to_dir(parent.to_path_buf(), Some(c), false, ctx); } } }
+                });
+            } else { ui.label("読み込み中..."); }
+        });
+    }
+
+    fn draw_toasts(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time); self.toasts.retain(|(_, e)| *e > now);
+        if !self.toasts.is_empty() { egui::Area::new(egui::Id::new("toasts")).anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-10.,-10.)).interactable(false).show(ctx, |ui| { for (m, _) in &self.toasts { egui::Frame::group(ui.style()).fill(egui::Color32::from_black_alpha(200)).show(ui, |ui| ui.label(m)); } }); }
+    }
+
+    fn handle_action(&mut self, ctx: &egui::Context, act: widgets::ViewerAction) {
+        match act {
+            widgets::ViewerAction::OpenRecent(p) => { let path = PathBuf::from(p); if path.exists() { self.open_path(path, ctx); } else { self.add_toast("対象のパスが見つかりません。".to_string(), ctx); } }
+            widgets::ViewerAction::OpenFolder => { if let Some(p) = rfd::FileDialog::new().pick_folder() { self.open_path(p, ctx); } }
+            widgets::ViewerAction::RevealInExplorer => { if let Some(p) = &self.manager.archive_path { if let Err(e) = integrator::reveal_in_explorer(p) { self.add_toast(e, ctx); } } }
+            widgets::ViewerAction::OpenExternal(idx) => self.open_external(idx, ctx),
+            widgets::ViewerAction::OpenExternalSettings => { self.settings_args_tmp = self.config.external_apps.iter().map(|a| a.args.join(" ")).collect(); self.show_settings = true; }
+            widgets::ViewerAction::OpenKeyConfig => self.show_key_config = true,
+            widgets::ViewerAction::Exit => { self.save_config(); ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+            widgets::ViewerAction::SetDisplayMode(m) => { self.display_mode = m; if m == DisplayMode::Manual { self.zoom = 1.0; } }
+            widgets::ViewerAction::ZoomIn => { self.zoom = (self.zoom * ui::ZOOM_STEP).min(ui::MAX_ZOOM); self.display_mode = DisplayMode::Manual; }
+            widgets::ViewerAction::ZoomOut => { self.zoom = (self.zoom / ui::ZOOM_STEP).max(ui::MIN_ZOOM); self.display_mode = DisplayMode::Manual; }
+            widgets::ViewerAction::ToggleManga => { self.manga_mode = !self.manga_mode; self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode, image::MAX_TEX_DIM); }
+            widgets::ViewerAction::ToggleMangaRtl => { self.config.manga_rtl = !self.config.manga_rtl; self.save_config(); }
+            widgets::ViewerAction::ToggleTree => { self.show_tree = !self.show_tree; if self.show_tree { self.sync_tree_to_current(); } }
+            widgets::ViewerAction::OpenSortSettings => { self.show_sort_settings = true; self.sort_focus_idx = 0; }
+            widgets::ViewerAction::ToggleLinear => { self.config.filter_mode = match self.config.filter_mode { config::FilterMode::Nearest => config::FilterMode::Bilinear, config::FilterMode::Bilinear => config::FilterMode::Bicubic, config::FilterMode::Bicubic => config::FilterMode::Lanczos, config::FilterMode::Lanczos => config::FilterMode::Nearest }; self.manager.clear_cache(); self.save_config(); self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode, image::MAX_TEX_DIM); }
+            widgets::ViewerAction::ToggleAlwaysOnTop => { self.config.always_on_top = !self.config.always_on_top; ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.config.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal })); self.save_config(); }
+            widgets::ViewerAction::Rotate(cw) => self.rotate_current(cw, ctx),
+            widgets::ViewerAction::GoPrevDir => self.go_prev_dir(ctx),
+            widgets::ViewerAction::GoNextDir => self.go_next_dir(ctx),
+            widgets::ViewerAction::SetOpenFromEnd(b) => { self.config.open_from_end = b; self.manager.open_from_end = b; self.save_config(); }
+            widgets::ViewerAction::SetBgMode(m) => { self.config.bg_mode = m; self.save_config(); }
+            widgets::ViewerAction::PrevPage => self.go_prev(ctx),
+            widgets::ViewerAction::NextPage => self.go_next(ctx),
+            widgets::ViewerAction::NextDir => self.go_next_dir(ctx),
+            widgets::ViewerAction::Seek(idx) => { self.manager.target_index = idx; self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode, image::MAX_TEX_DIM); }
+            widgets::ViewerAction::ToggleDebug => self.show_debug = !self.show_debug,
+            widgets::ViewerAction::SetRenderer(m) => { self.config.renderer = m; self.save_config(); self.add_toast("設定を反映するには再起動が必要です。".to_string(), ctx); }
+            widgets::ViewerAction::ToggleWindowResizable => { self.config.window_resizable = !self.config.window_resizable; ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(self.config.window_resizable)); self.save_config(); }
+            widgets::ViewerAction::ResizeWindow(w, h) => { let s = egui::vec2(w as f32, h as f32); ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(s)); self.config.window_width = s.x; self.config.window_height = s.y; self.last_resize_time = ctx.input(|i| i.time); self.save_config(); }
+            widgets::ViewerAction::About => self.show_about = true,
+            _ => {}
+        }
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 1. 外部・システムからのイベント処理 (IPC / ドラッグ&ドロップ)
+        while let Ok(path) = self.ipc_rx.try_recv() {
+            self.open_path(path, ctx);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         }
 
-        // ── ドラッグ＆ドロップ ──────────────────────────────────────────
         let dropped: Option<PathBuf> = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.as_ref().cloned()));
         if let Some(path) = dropped {
             self.open_path(path, ctx);
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
-        // ── キーボード ──────────────────────────────────────────────────
+        // ウィンドウの「×」ボタン、システムメニュー、Alt+F4 等での終了要求を検知した瞬間に保存
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.save_config();
+        }
+
+        // 2. 内部状態の更新
+        self.update_title(ctx);
+        self.update_window_state(ctx);
+        self.handle_debug_logging(ctx);
+        self.process_manager_update(ctx);
+
+        // 3. 入力のハンドリング
         let k = input::gather_input(ctx, &self.config);
+        self.handle_input(ctx, &k);
 
-        let is_typing = ctx.wants_keyboard_input();
-        let is_capturing = self.capturing_key_for.is_some();
-        // 設定・キーコン・初回起動は「重い」モーダルとして、他のトグル操作を制限する
-        let is_heavy_modal = self.show_settings || self.show_key_config || self.config.is_first_run;
+        // 4. 描画
+        self.draw_ui(ctx);
+    }
 
-        // ソート/外部アプリ設定ウィンドウが開いている間はメイン操作を無効化
-        // ※show_sort_settings 自体も操作無効化の対象だが、自身のトグル（閉じる）は許可する必要がある
-        let modal_open = is_heavy_modal || self.show_sort_settings;
-
-        // ── モード別のキー入力処理 ──────────────────────────────────────
-        if self.show_tree && !modal_open && !is_typing && !is_capturing {
-            // ツリー操作モード：メイン画面の操作を完全に遮断
-            let old_selected = self.manager.tree.selected.clone();
-
-            if k.up { self.manager.tree.move_selection(-1); }
-            if k.dn { self.manager.tree.move_selection(1); }
-            if k.right { self.manager.tree.expand_current(); }
-            if k.left { self.manager.tree.collapse_or_up(); }
-
-            // 選択が変更された場合、プレビューとしてそのパスを開く（一番最初の画像を表示）
-            let new_selected = self.manager.tree.selected.clone();
-            if new_selected != old_selected {
-                if let Some(path) = new_selected {
-                    // ツリー表示を維持したまま、バックグラウンドのビューアの中身を更新
-                    self.open_path(path, ctx);
-                }
-            }
-
-            if k.enter {
-                if let Some(path) = self.manager.tree.activate_current() {
-                    self.open_path(path, ctx);
-                    self.show_tree = false;
-                }
-            }
-            if k.esc { self.show_tree = false; }
-        } else if !modal_open && !is_typing && !is_capturing {
-            // 通常ビューアモード
-            if k.prev_page { self.go_prev(ctx); }
-            if k.next_page { self.go_next(ctx); }
-
-            if k.prev_page_single { self.go_single_prev(ctx); }
-            if k.next_page_single { self.go_single_next(ctx); }
-
-            if k.first_page { self.go_first(ctx); }
-            if k.last_page { self.go_last(ctx); }
-            if k.toggle_fit {
-                self.display_mode = match self.display_mode {
-                    DisplayMode::Fit => DisplayMode::WindowFit,
-                    DisplayMode::WindowFit => { self.zoom = 1.0; DisplayMode::Manual },
-                    DisplayMode::Manual => DisplayMode::Fit,
-                };
-            }
-            if k.zoom_in { self.zoom = (self.zoom * ui::ZOOM_STEP).min(ui::MAX_ZOOM); self.display_mode = DisplayMode::Manual; }
-            if k.zoom_out { self.zoom = (self.zoom / ui::ZOOM_STEP).max(ui::MIN_ZOOM); self.display_mode = DisplayMode::Manual; }
-            if k.rcw    { self.rotate_current(true,  ctx); }
-            if k.rccw   { self.rotate_current(false, ctx); }
-            if k.prev_dir { self.go_prev_dir(ctx); }
-            if k.next_dir { self.go_next_dir(ctx); }
-            if k.toggle_manga {
-                self.manga_mode = !self.manga_mode;
-                self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode);
-                ctx.request_repaint();
-            }
-            if k.toggle_rtl {
-                self.config.manga_rtl = !self.config.manga_rtl;
-                self.save_config();
-            }
-            if k.toggle_linear {
-                self.config.filter_mode = match self.config.filter_mode {
-                    config::FilterMode::Nearest => config::FilterMode::Bilinear,
-                    config::FilterMode::Bilinear => config::FilterMode::Bicubic,
-                    config::FilterMode::Bicubic => config::FilterMode::Lanczos,
-                    config::FilterMode::Lanczos => config::FilterMode::Nearest,
-                };
-                self.manager.clear_cache();
-                self.save_config();
-                self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode);
-            }
-            if k.toggle_bg {
-                self.config.bg_mode = match self.config.bg_mode {
-                    config::BackgroundMode::Theme => config::BackgroundMode::Checkerboard,
-                    config::BackgroundMode::Checkerboard => config::BackgroundMode::Black,
-                    config::BackgroundMode::Black => config::BackgroundMode::Gray,
-                    config::BackgroundMode::Gray => config::BackgroundMode::White,
-                    config::BackgroundMode::White => config::BackgroundMode::Green,
-                    config::BackgroundMode::Green => config::BackgroundMode::Theme,
-                };
-                self.save_config();
-            }
-            if k.bs {
-                if let Some(path) = &self.manager.archive_path {
-                    if let Err(e) = integrator::reveal_in_explorer(path) {
-                        self.error = Some(e);
-                    }
-                }
-            }
-            if k.open_external_1 { self.open_external(0, ctx); }
-            if k.open_external_2 { self.open_external(1, ctx); }
-            if k.open_external_3 { self.open_external(2, ctx); }
-            if k.open_external_4 { self.open_external(3, ctx); }
-            if k.open_external_5 { self.open_external(4, ctx); }
-
-            if k.quit { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
-
-            // 全画面切替
-            if k.fullscreen {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                self.is_fullscreen = !self.is_fullscreen;
-                self.is_borderless = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.is_fullscreen));
-            }
-            if k.borderless {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                self.is_borderless = !self.is_borderless;
-                self.is_fullscreen = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.is_borderless));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.is_borderless));
-            }
-        }
-
-        // ── ウィンドウ表示・切替系のショートカット ──────────────────────
-        // テキスト入力中やキー録画中、あるいは「重い」設定画面が開いているときは無効化
-        if !is_heavy_modal && !is_typing && !is_capturing {
-            if k.open_key_config {
-            self.show_key_config = true;
-        }
-
-            if k.sort_settings {
-                self.show_sort_settings = !self.show_sort_settings;
-                if self.show_sort_settings { self.sort_focus_idx = 0; }
-            }
-            if k.toggle_tree { 
-                self.show_tree = !self.show_tree; 
-                if self.show_tree { self.sync_tree_to_current(); }
-                ctx.request_repaint();
-            }
-        }
-
-        // Escapeで全画面・ボーダレスを抜ける
-        if !modal_open && k.esc {
-            if self.is_fullscreen || self.is_borderless {
-                self.is_fullscreen = false;
-                self.is_borderless = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
-            }
-        }
-
-        // ── 設定ウィンドウ ──────────────────────────────────────────────
-        if self.show_settings {
-            if widgets::settings_window(ctx, &mut self.show_settings, &mut self.config, &mut self.settings_args_tmp) {
-                self.save_config();
-            }
-        }
-
-        // ── キーコンフィグウィンドウ ──────────────────────────────────────
-        if self.show_key_config {
-            // キーキャプチャの実行
-            if let Some(action_id) = self.capturing_key_for.clone() {
-                if let Some(combo) = input::detect_key_combination(ctx) {
-                    self.config.keys.insert(action_id, combo);
-                    self.capturing_key_for = None;
-                    self.save_config();
-                }
-            }
-
-            if widgets::key_config_window(ctx, &mut self.show_key_config, &mut self.config, &mut self.capturing_key_for) {
-                self.save_config();
-            }
-        } else {
-            self.capturing_key_for = None;
-        }
-
-        // ── 初回起動時のウェルカムダイアログ ────────────────────────────────
-        if self.config.is_first_run {
-            egui::Window::new("Hinjakuへようこそ！")
-                .collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.label("初期設定ファイル(config.ini)を作成しました。");
-                    ui.label("主要なショートカットキー：");
-                    ui.label("・「S」：ソートの設定");
-                    ui.label("・「K」：キーコンフィグ（録画機能付き！）");
-                    ui.label("・「E」：外部アプリで開く（設定から変更可能）");
-                    ui.add_space(12.0);
-                    if ui.button("はじめる").clicked() {
-                        self.config.is_first_run = false;
-                        self.save_config();
-                    }
-                });
-        }
-
-        // ── ソート設定ウィンドウ ──────────────────────────────────────────
-        if self.show_sort_settings {
-            let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space));
-            if widgets::sort_settings_window(ctx, &mut self.show_sort_settings, &mut self.config, &mut self.sort_focus_idx, k.enter, space_pressed) {
-                self.manager.apply_sorting(&self.config);
-                self.manager.clear_cache();
-                self.save_config();
-            }
-        }
-
-        // ── メインメニューとツールバーの処理 ────────────────────────────
-        let menu_action = widgets::main_menu_bar(ctx, &self.config, &self.manager, self.display_mode, self.show_tree);
-
-        // ── サイドパネル（ツリー表示） ────────────────────────────────────
-        // ステータスバー（下部パネル）より先に定義することで、ツリーが画面左端をフルに占有するようにします
-        let mut tree_open_req = None;
-        if self.show_tree {
-            let half_width = ctx.screen_rect().width() / 2.0;
-            egui::SidePanel::left("tree_panel")
-                .resizable(true)
-                .default_width(half_width)
-                .width_range(200.0..=half_width * 1.5)
-                .show(ctx, |ui| {
-                    widgets::sidebar_ui(ui, &mut self.manager.tree, &self.manager.archive_path, ctx, &mut tree_open_req);
-                });
-            
-            // ツリーの描画が終わったので、スクロール要求フラグを下ろす
-            self.manager.tree.scroll_to_selected = false;
-        }
-
-        let toolbar_action = widgets::bottom_toolbar(ctx, &self.manager, &self.config, self.display_mode, self.zoom, self.manga_mode, self.is_nav_locked(ctx));
-
-        // 集約されたアクションを一括処理
-        if let Some(act) = menu_action.or(toolbar_action) {
-            match act {
-                widgets::ViewerAction::OpenFolder => { if let Some(p) = rfd::FileDialog::new().pick_folder() { self.open_path(p, ctx); } },
-                widgets::ViewerAction::RevealInExplorer => {
-                    if let Some(path) = &self.manager.archive_path {
-                        if let Err(e) = integrator::reveal_in_explorer(path) {
-                            self.add_toast(e, ctx);
-                        }
-                    }
-                },
-                widgets::ViewerAction::OpenExternal(idx) => self.open_external(idx, ctx),
-                widgets::ViewerAction::OpenExternalSettings => { 
-                    self.settings_args_tmp = self.config.external_apps.iter().map(|app| app.args.join(" ")).collect(); 
-                    self.show_settings = true; 
-                },
-                widgets::ViewerAction::OpenKeyConfig => { self.show_key_config = true; },
-                widgets::ViewerAction::Exit => { ctx.send_viewport_cmd(egui::ViewportCommand::Close); },
-                widgets::ViewerAction::SetDisplayMode(m) => { self.display_mode = m; if m == DisplayMode::Manual { self.zoom = 1.0; } },
-                widgets::ViewerAction::ZoomIn => { self.zoom = (self.zoom * ui::ZOOM_STEP).min(ui::MAX_ZOOM); self.display_mode = DisplayMode::Manual; },
-                widgets::ViewerAction::ZoomOut => { self.zoom = (self.zoom / ui::ZOOM_STEP).max(ui::MIN_ZOOM); self.display_mode = DisplayMode::Manual; },
-                widgets::ViewerAction::ToggleManga => { self.manga_mode = !self.manga_mode; self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode); },
-                widgets::ViewerAction::ToggleMangaRtl => { self.config.manga_rtl = !self.config.manga_rtl; self.save_config(); },
-                widgets::ViewerAction::ToggleTree => { self.show_tree = !self.show_tree; if self.show_tree { self.sync_tree_to_current(); } },
-                widgets::ViewerAction::OpenSortSettings => { self.show_sort_settings = true; self.sort_focus_idx = 0; },
-                widgets::ViewerAction::ToggleLinear => {
-                    self.config.filter_mode = match self.config.filter_mode {
-                        config::FilterMode::Nearest => config::FilterMode::Bilinear,
-                        config::FilterMode::Bilinear => config::FilterMode::Bicubic,
-                        config::FilterMode::Bicubic => config::FilterMode::Lanczos,
-                        config::FilterMode::Lanczos => config::FilterMode::Nearest,
-                    };
-                    self.manager.clear_cache(); self.save_config(); self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode);
-                },
-                widgets::ViewerAction::ToggleAlwaysOnTop => {
-                    self.config.always_on_top = !self.config.always_on_top;
-                    let level = if self.config.always_on_top {
-                        egui::WindowLevel::AlwaysOnTop
-                    } else {
-                        egui::WindowLevel::Normal
-                    };
-                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
-                    self.save_config();
-                },
-                widgets::ViewerAction::ToggleMultipleInstances => { self.config.allow_multiple_instances = !self.config.allow_multiple_instances; self.save_config(); },
-                widgets::ViewerAction::Rotate(cw) => self.rotate_current(cw, ctx),
-                widgets::ViewerAction::GoPrevDir => self.go_prev_dir(ctx),
-                widgets::ViewerAction::GoNextDir => self.go_next_dir(ctx),
-                widgets::ViewerAction::SetOpenFromEnd(b) => {
-                    self.config.open_from_end = b;
-                    self.manager.open_from_end = b;
-                    self.save_config();
-                },
-                widgets::ViewerAction::SetBgMode(m) => { self.config.bg_mode = m; self.save_config(); },
-                widgets::ViewerAction::PrevPage => self.go_prev(ctx),
-                widgets::ViewerAction::NextPage => self.go_next(ctx),
-                widgets::ViewerAction::NextDir => self.go_next_dir(ctx),
-                widgets::ViewerAction::Seek(idx) => { self.manager.target_index = idx; self.folder_lock_until = 0.0; self.page_lock_until = 0.0; self.manager.schedule_prefetch(self.config.filter_mode, self.manga_mode); },
-            }
-        }
-        if let Some(p) = tree_open_req { self.open_path(p, ctx); }
-
-        // ── メイン表示エリア ────────────────────────────────────────────
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // 表示領域全体を背景設定で塗りつぶす（ロード中やエラー時も表示される）
-            painter::paint_background(ui, ui.available_rect_before_wrap(), self.config.bg_mode);
-
-            if let Some(err) = self.error.clone() {
-                ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new(format!("⚠ {err}")).color(egui::Color32::RED));
-                });
-                return;
-            }
-
-            // ロード中スピナー（テクスチャ存在確認のみ。参照は取得しない）
-            if self.get_texture(self.manager.current).is_none() {
-                ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        if self.manager.entries.is_empty() && !self.manager.is_listing {
-                            if self.manager.archive_path.is_none() {
-                                ui.label(egui::RichText::new("画像をドラッグ＆ドロップ、またはメニューから開いてください").size(20.0).strong());
-                            } else {
-                                ui.label(egui::RichText::new("画像が見つかりませんでした").size(20.0).strong());
-                                ui.add_space(10.0);
-                                
-                                if let Some(p) = &self.manager.archive_path {
-                                    if let Some(parent) = p.as_path().parent() {
-                                        if ui.button(format!("⤴ 上の階層へ: {}", parent.display())).clicked() {
-                                            let current = p.clone();
-                                            self.move_to_dir(parent.to_path_buf(), Some(current), false, ctx);
-                                        }
-                                    }
-                                }
-                                ui.add_space(10.0);
-                            }
-                        } else {
-                            let current_file = self.manager.entries.get(self.manager.current)
-                                .map(|s: &String| s.as_str())
-                                .unwrap_or("");
-                            ui.label(egui::RichText::new("⏳ 読み込み中...").size(18.0).color(egui::Color32::GRAY));
-                            ui.label(egui::RichText::new(current_file).size(14.0).color(egui::Color32::DARK_GRAY));
-                        }
-                    });
-                });
-                return;
-            }
-
-            // マウス操作（self の可変借用が必要なのでテクスチャ参照の前に処理）
-            let (wheel, ctrl, secondary) = ctx.input(|i| (
-                i.smooth_scroll_delta.y,
-                i.modifiers.ctrl,
-                i.pointer.button_down(egui::PointerButton::Secondary)
-            ));
-
-            if wheel != 0.0 {
-                if ctrl || secondary {
-                    self.zoom = (self.zoom * (1.0 + wheel * ui::WHEEL_ZOOM_SENSITIVITY)).clamp(ui::MIN_ZOOM, ui::MAX_ZOOM);
-                    self.display_mode = DisplayMode::Manual;
-                } else {
-                    // スクロール感度の調整: 蓄積バッファがしきい値(40.0)を超えた時だけ発火
-                    self.wheel_accumulator += wheel;
-                    if self.wheel_accumulator.abs() >= ui::WHEEL_NAV_THRESHOLD {
-                        if self.wheel_accumulator > 0.0 { self.go_prev(ctx); }
-                        else { self.go_next(ctx); }
-                        // ページ移動時にサイズをリセット
-                        self.display_mode = DisplayMode::Fit;
-                        self.wheel_accumulator = 0.0;
-                    }
-                }
-            } else {
-                self.wheel_accumulator = 0.0; // 静止したらバッファリセット
-            }
-
-            let mode  = self.display_mode;
-            let zoom  = self.zoom;
-
-            // 最後の一枚（または最後のペア）を表示しているか判定
-            let is_at_end = self.manager.current >= self.manager.entries.len().saturating_sub(2);
-
-            // 描画ロジックを painter に委譲
-            let (_resp, p_action) = painter::draw_main_area(
-                ui,
-                &self.manager,
-                mode,
-                zoom,
-                self.manga_mode,
-                self.config.manga_rtl,
-                self.manga_shift,
-                ctx,
-                is_at_end,
-            );
-            if let Some(widgets::ViewerAction::NextDir) = p_action { self.go_next_dir(ctx); }
-
-        });
-
-        // ── トースト通知の描画 ──────────────────────────────────────────
-        let now = ctx.input(|i| i.time);
-        self.toasts.retain(|(_, expires)| *expires > now);
-
-        if !self.toasts.is_empty() {
-            egui::Area::new(egui::Id::new("toast_area"))
-                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-10.0, -10.0))
-                .order(egui::Order::Foreground)
-                .interactable(false)
-                .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        for (msg, _) in &self.toasts {
-                            egui::Frame::group(ui.style())
-                                .fill(egui::Color32::from_black_alpha(200))
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(100)))
-                                .rounding(4.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new("⚠").color(egui::Color32::YELLOW).strong());
-                                        ui.label(egui::RichText::new(msg).color(egui::Color32::WHITE));
-                                    });
-                                });
-                            ui.add_space(4.0);
-                        }
-                    });
-                });
-        }
-
-        self.was_focused = is_focused;
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        // アプリ終了時（ウィンドウを閉じた際）に現在の位置・サイズを含む設定を保存
+        self.save_config();
     }
 }

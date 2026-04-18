@@ -34,6 +34,12 @@ pub enum BackgroundMode {
     Green,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RendererMode {
+    Glow,
+    Wgpu,
+}
+
 #[derive(Clone, Debug)]
 pub struct ExternalAppConfig {
     pub name: String,
@@ -68,6 +74,22 @@ pub struct Config {
     pub keys: HashMap<String, String>,
     /// 初回起動フラグ
     pub is_first_run: bool,
+    /// レンダラーモード
+    pub renderer: RendererMode,
+    /// ウィンドウの X 座標
+    pub window_x: f32,
+    /// ウィンドウの Y 座標
+    pub window_y: f32,
+    /// ウィンドウの幅
+    pub window_width: f32,
+    /// ウィンドウの高さ
+    pub window_height: f32,
+    /// 最近開いたパスの履歴 (最大10件)
+    pub recent_paths: Vec<String>,
+    /// ウィンドウのリサイズを許可するか
+    pub window_resizable: bool,
+    /// ウィンドウが最大化されているか
+    pub window_maximized: bool,
 }
 
 impl Default for Config {
@@ -100,6 +122,14 @@ impl Default for Config {
             open_from_end: false,
             bg_mode: BackgroundMode::Theme,
             is_first_run: true,
+            renderer: RendererMode::Glow,
+            window_x: 100.0,
+            window_y: 100.0,
+            window_width: 1024.0,
+            window_height: 768.0,
+            recent_paths: Vec::new(),
+            window_resizable: true,
+            window_maximized: false,
             keys: [
                 ("PrevPage", "ArrowLeft, P"),
                 ("NextPage", "ArrowRight, N"),
@@ -136,6 +166,7 @@ impl Default for Config {
                 ("ToggleMangaRtl", "Y"),
                 ("Quit", "Q, Ctrl+W"),
                 ("ToggleBg", "B"),
+                ("ToggleDebug", "F12"),
             ].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         }
     }
@@ -177,6 +208,22 @@ pub fn load_config_file(custom_name: Option<&str>) -> (Config, Option<PathBuf>) 
                     "checkerboard" => BackgroundMode::Checkerboard,
                     "green" => BackgroundMode::Green,
                     _ => BackgroundMode::Theme,
+                };
+            }
+            if let Some(v) = sec.get("WindowX") { if let Ok(f) = v.parse() { cfg.window_x = f; } }
+            if let Some(v) = sec.get("WindowY") { if let Ok(f) = v.parse() { cfg.window_y = f; } }
+            if let Some(v) = sec.get("WindowWidth") { if let Ok(f) = v.parse() { cfg.window_width = f; } }
+            if let Some(v) = sec.get("WindowHeight") { if let Ok(f) = v.parse() { cfg.window_height = f; } }
+            if let Some(v) = sec.get("RecentPaths") {
+                cfg.recent_paths = v.split('|').map(|s| s.to_string()).filter(|s| !s.is_empty()).collect();
+            }
+            if let Some(v) = sec.get("WindowResizable") { cfg.window_resizable = v == "true"; }
+            if let Some(v) = sec.get("WindowMaximized") { cfg.window_maximized = v == "true"; }
+
+            if let Some(v) = sec.get("Renderer") {
+                cfg.renderer = match v.to_lowercase().as_str() {
+                    "wgpu" => RendererMode::Wgpu,
+                    _ => RendererMode::Glow,
                 };
             }
         }
@@ -225,7 +272,15 @@ pub fn save_config_file(cfg: &Config, path: &std::path::Path) -> Result<()> {
         .set("AlwaysOnTop", cfg.always_on_top.to_string())
         .set("SortNatural", cfg.sort_natural.to_string())
         .set("MangaRtl", cfg.manga_rtl.to_string())
-        .set("IsFirstRun", cfg.is_first_run.to_string());
+        .set("IsFirstRun", cfg.is_first_run.to_string())
+        .set("Renderer", if cfg.renderer == RendererMode::Wgpu { "Wgpu" } else { "Glow" })
+        .set("WindowX", cfg.window_x.to_string())
+        .set("WindowY", cfg.window_y.to_string())
+        .set("WindowWidth", cfg.window_width.to_string())
+        .set("WindowHeight", cfg.window_height.to_string())
+        .set("WindowResizable", cfg.window_resizable.to_string())
+        .set("WindowMaximized", cfg.window_maximized.to_string())
+        .set("RecentPaths", cfg.recent_paths.join("|"));
     ini.with_section(Some("Global")).set("OpenFromEnd", cfg.open_from_end.to_string());
     
     for (i, app) in cfg.external_apps.iter().enumerate() {

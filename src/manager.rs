@@ -1,3 +1,4 @@
+
 use crate::{archive::{self, ArchiveReader}, utils};
 use crate::error::HinjakuError;
 use crate::config::{Config, SortMode, SortOrder, FilterMode};
@@ -278,7 +279,7 @@ impl Manager {
                             }
                             self.target_index = self.current;
                             // リストが確定したのでプリフェッチを開始
-                            self.schedule_prefetch(config.filter_mode, false); 
+                            self.schedule_prefetch(config.filter_mode, false, image::MAX_TEX_DIM); 
                         }
                     }
                     Err(_) => {} // エラー処理は viewer 側で行う
@@ -345,6 +346,34 @@ impl Manager {
         self.cache.get(&key).map(|c| c.first_frame())
     }
 
+    /// 現在キャッシュに保持されている画像数を返す
+    pub fn cache_len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// 現在のキャッシュの推定合計サイズ（バイト）を返す
+    pub fn total_cache_size_bytes(&self) -> usize {
+        self.cache.values().map(|img| {
+            match img {
+                CachedImage::Static(tex) => tex.size()[0] * tex.size()[1] * 4,
+                CachedImage::Animated { frames, .. } => {
+                    frames.iter().map(|(t, _)| t.size()[0] * t.size()[1] * 4).sum::<usize>()
+                }
+            }
+        }).sum()
+    }
+
+    /// 個別のキャッシュ統計（名前とサイズ）を返す
+    pub fn get_cache_stats(&self) -> Vec<(String, usize)> {
+        self.cache.iter().map(|(key, img)| {
+            let size = match img {
+                CachedImage::Static(tex) => tex.size()[0] * tex.size()[1] * 4,
+                CachedImage::Animated { frames, .. } => frames.iter().map(|(t, _)| t.size()[0] * t.size()[1] * 4).sum(),
+            };
+            (key.clone(), size)
+        }).collect()
+    }
+
     pub fn is_spread(&self, index: usize) -> bool {
         self.get_first_tex(index).map(|t| t.size_vec2().x > t.size_vec2().y).unwrap_or(false)
     }
@@ -398,11 +427,11 @@ impl Manager {
             } else { self.current = 0; }
             self.target_index = self.current;
             self.archive_path = Some(path);
-            self.schedule_prefetch(config.filter_mode, manga);
+            self.schedule_prefetch(config.filter_mode, manga, image::MAX_TEX_DIM);
         }
     }
 
-    pub fn go_next(&mut self, manga: bool, shift: bool, filter: FilterMode) -> bool {
+    pub fn go_next(&mut self, manga: bool, shift: bool, filter: FilterMode, max_dim: u32) -> bool {
         if self.entries.is_empty() { return false; }
         let step = if manga {
             if self.target_index + 1 >= self.entries.len() || (!shift && self.target_index == 0) { 1 }
@@ -410,11 +439,11 @@ impl Manager {
             else { 2 }
         } else { 1 };
         if self.target_index + step < self.entries.len() {
-            self.target_index += step; self.schedule_prefetch(filter, manga); true
+            self.target_index += step; self.schedule_prefetch(filter, manga, max_dim); true
         } else { false }
     }
 
-    pub fn go_prev(&mut self, manga: bool, shift: bool, filter: FilterMode) -> bool {
+    pub fn go_prev(&mut self, manga: bool, shift: bool, filter: FilterMode, max_dim: u32) -> bool {
         if self.target_index == 0 { return false; }
         let step = if manga {
             let first_pair = if shift { 0 } else { 1 };
@@ -423,7 +452,7 @@ impl Manager {
             else { 2 }
         } else { 1 };
         self.target_index = self.target_index.saturating_sub(step);
-        self.schedule_prefetch(filter, manga);
+        self.schedule_prefetch(filter, manga, max_dim);
         true
     }
 
@@ -458,7 +487,7 @@ impl Manager {
         }
     }
 
-    pub fn schedule_prefetch(&mut self, filter_mode: FilterMode, manga: bool) {
+    pub fn schedule_prefetch(&mut self, filter_mode: FilterMode, manga: bool, max_dim: u32) {
         let Some(path) = self.archive_path.as_ref() else { return };
         let len = self.entries.len();
         if len == 0 { return; }
@@ -476,7 +505,7 @@ impl Manager {
             self.pending.insert(key.clone());
             let _ = self.load_tx.send(LoadRequest {
                 index: idx, key, archive_path: path.to_path_buf(), entry_name: entry.name.clone(),
-                entry_index: entry_idx, rotation: rot, max_dim: image::MAX_TEX_DIM, filter_mode, generation: gen,
+                entry_index: entry_idx, rotation: rot, max_dim, filter_mode, generation: gen,
             });
         };
 
@@ -618,14 +647,13 @@ impl NavTree {
 
     pub fn expand_current(&mut self) {
         if let Some(sel) = self.selected.clone() {
-            let sel = crate::utils::clean_path(&sel); // utils へ移動
-            let kind = crate::utils::detect_kind(&sel); // utils へ移動
-            if kind == crate::utils::ArchiveKind::Plain {
-                // 展開して即座に中に入る
+            let sel = utils::clean_path(&sel);
+            if sel.is_dir() {
+                // フォルダなら展開して最初の子要素へ移動
                 self.expanded.insert(sel.clone());
                 let children = self.get_children(&sel);
                 if let Some(first) = children.first() {
-                    self.selected = Some(crate::utils::clean_path(first)); // utils へ移動
+                    self.selected = Some(utils::clean_path(first));
                     self.scroll_to_selected = true;
                 }
             }
@@ -634,18 +662,16 @@ impl NavTree {
 
     pub fn collapse_or_up(&mut self) {
         if let Some(sel) = self.selected.clone() {
-            let sel = crate::utils::clean_path(&sel); // utils へ移動
+            let sel = utils::clean_path(&sel);
             if self.expanded.contains(&sel) {
-                // 現在のフォルダが開いているなら、まずそれを閉じる
+                // 展開されているなら閉じる
                 self.expanded.remove(&sel);
             } else if let Some(parent) = sel.parent() {
-                // すでに閉じている（またはファイル）なら親へ戻り、
-                // 移動先の親フォルダ自体も閉じる（階層を遡る挙動に合わせる）
-                let p = crate::utils::clean_path(parent); // utils へ移動
+                // 閉じている（またはファイル）なら親へ戻り、親も閉じる
+                let p = utils::clean_path(parent);
                 if p != sel {
                     self.selected = Some(p.clone());
-                    self.expanded.remove(&sel);
-                    self.expanded.remove(&p);   // 親に戻った際、その階層を折りたたむ
+                    self.expanded.remove(&p);   // 親を閉じて完全に抜ける
                     self.scroll_to_selected = true;
                 }
             }

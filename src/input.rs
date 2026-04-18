@@ -37,6 +37,7 @@ pub struct KeyboardState {
     pub toggle_rtl: bool,
     pub quit: bool,
     pub toggle_bg: bool,
+    pub toggle_debug: bool,
 }
 
 pub fn gather_input(ctx: &egui::Context, config: &Config) -> KeyboardState {
@@ -83,6 +84,7 @@ pub fn gather_input(ctx: &egui::Context, config: &Config) -> KeyboardState {
             toggle_rtl: check("ToggleMangaRtl"),
             quit: check("Quit"),
             toggle_bg: check("ToggleBg"),
+            toggle_debug: check("ToggleDebug"),
         }
     })
 }

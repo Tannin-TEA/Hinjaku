@@ -136,7 +136,7 @@ pub fn draw_main_area(
                 if is_at_end {
                     ui.add_space(20.0);
                     ui.vertical_centered(|ui| {
-                        if ui.button(RichText::new("次のフォルダへ ➡").size(20.0).strong()).clicked() {
+                        if ui.button(RichText::new("次のフォルダへ").size(20.0).strong()).clicked() {
                             action = Some(ViewerAction::NextDir);
                         }
                     });
@@ -150,7 +150,7 @@ pub fn draw_main_area(
         if is_at_end {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
-                if ui.button(RichText::new("次のフォルダへ ➡").size(20.0).strong()).clicked() {
+                if ui.button(RichText::new("次のフォルダへ").size(20.0).strong()).clicked() {
                     action = Some(ViewerAction::NextDir);
                 }
             });

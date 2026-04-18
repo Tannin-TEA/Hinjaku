@@ -50,6 +50,10 @@ impl ArchiveReader for DefaultArchiveReader {
         for entry in std::fs::read_dir(path)? {
             let e = entry?;
             let p = e.path();
+            
+            // システム属性（System）を持つパスのみスキップし、隠し属性（Hidden）は表示する
+            if utils::is_system(&p) { continue; }
+
             if p.is_dir() || matches!(utils::detect_kind(&p), utils::ArchiveKind::Zip | utils::ArchiveKind::SevenZ) {
                 targets.push(utils::clean_path(&p));
             }

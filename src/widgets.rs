@@ -9,6 +9,7 @@ use crate::integrator;
 
 /// ユーザーがUI操作を通じて要求したアクション
 pub enum ViewerAction {
+    OpenRecent(String),
     OpenFolder,
     RevealInExplorer,
     OpenExternal(usize),
@@ -35,6 +36,11 @@ pub enum ViewerAction {
     NextPage,
     NextDir,
     Seek(usize),
+    ToggleDebug,
+    SetRenderer(config::RendererMode),
+    ToggleWindowResizable,
+    ResizeWindow(u32, u32),
+    About,
 }
 
 pub fn settings_window(
@@ -43,6 +49,8 @@ pub fn settings_window(
     config: &mut config::Config,
     settings_args_tmp: &mut [String],
 ) -> bool {
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { *show = false; }
+
     let mut saved = false;
     egui::Window::new("外部アプリ連携の設定 (送る)")
         .fixed_size([500.0, 550.0])
@@ -50,29 +58,14 @@ pub fn settings_window(
         .collapsible(false)
         .resizable(true)
         .show(ctx, |ui| {
-            // フッターを先に定義して最下段に固定
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.add_space(12.0); // ウィンドウ最下部の余白
-                ui.horizontal(|ui| {
-                    let w = ui.available_width();
-                    ui.add_space((w - 120.0) / 2.0); // ボタン2つ分のセンタリング調整
-                    if ui.button("適用").clicked() {
-                        for i in 0..5 {
-                            config.external_apps[i].args = settings_args_tmp[i].split_whitespace().map(|s| s.to_string()).collect();
-                        }
-                        saved = true;
-                    }
-                    if ui.button("閉じる").clicked() { *show = false; }
-                });
-                ui.add_space(12.0); // ボタン上の余白
-                ui.separator();    // コンテンツとの区切り線
-                ui.small("※ %P はフルパス、%A はフォルダ/アーカイブのパスに置換されます。必要に応じて \"%P\" のように引用符で囲んでください。");
-            });
-
             ui.label("ショートカットキーやメニューから起動するソフトを5つまで設定できます。");
+            ui.label("%P:フルパス, %A:フォルダパス");
             ui.add_space(8.0);
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            // フッターの高さを確保したスクロールエリア
+            let scroll_height = ui.available_height() - 100.0;
+
+            egui::ScrollArea::vertical().max_height(scroll_height).show(ui, |ui| {
                 for i in 0..5 {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
@@ -84,7 +77,7 @@ pub fn settings_window(
                             ui.label("実行パス:");
                             ui.horizontal(|ui| {
                                 ui.text_edit_singleline(&mut config.external_apps[i].exe);
-                                if ui.button("参照…").clicked() {
+                                if ui.button("参照 >").clicked() {
                                     if let Some(p) = rfd::FileDialog::new().pick_file() {
                                         config.external_apps[i].exe = p.to_string_lossy().to_string();
                                     }
@@ -98,6 +91,20 @@ pub fn settings_window(
                     });
                 }
             });
+
+            // フッターを下部に配置
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("適用").clicked() {
+                        for i in 0..5 {
+                            config.external_apps[i].args = settings_args_tmp[i].split_whitespace().map(|s| s.to_string()).collect();
+                        }
+                        saved = true;
+                    }
+                    if ui.button("閉じる").clicked() { *show = false; }
+                });
+            });
         });
     saved
 }
@@ -110,20 +117,14 @@ pub fn sort_settings_window(
     enter_key: bool,
     space_key: bool,
 ) -> bool {
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { *show = false; }
+
     let mut changed = false;
     egui::Window::new("ソートの設定 (S)")
         .fixed_size([500.0, 550.0])
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .collapsible(false).resizable(true)
         .show(ctx, |ui| {
-            // フッターを先に定義して最下段に固定
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.add_space(12.0);
-                if ui.button("閉じる").clicked() { *show = false; }
-                ui.add_space(12.0);
-                ui.separator();
-            });
-
             let (arr_up, arr_dn, arr_left, arr_right) = ctx.input(|i| (
                 i.key_pressed(egui::Key::ArrowUp),
                 i.key_pressed(egui::Key::ArrowDown),
@@ -161,9 +162,12 @@ pub fn sort_settings_window(
             ui.label("矢印キーで選択 / Enterで戻る");
             ui.add_space(8.0);
             
+            let scroll_height = ui.available_height() - 60.0;
+            egui::ScrollArea::vertical().max_height(scroll_height).show(ui, |ui| {
+            
             ui.horizontal(|ui| {
                 let active = *focus_idx == 0;
-                let label = if active { egui::RichText::new("▶ 基準:").color(egui::Color32::YELLOW) } else { egui::RichText::new("  基準:") };
+                let label = if active { egui::RichText::new("> 基準:").color(egui::Color32::YELLOW) } else { egui::RichText::new("  基準:") };
                 ui.label(label);
                 changed |= ui.radio_value(&mut config.sort_mode, SortMode::Name, "ファイル名").changed();
                 changed |= ui.radio_value(&mut config.sort_mode, SortMode::Mtime, "更新日時").changed();
@@ -186,7 +190,7 @@ pub fn sort_settings_window(
 
             ui.horizontal(|ui| {
                 let active = *focus_idx == 1;
-                let label = if active { egui::RichText::new("▶ 順序:").color(egui::Color32::YELLOW) } else { egui::RichText::new("  順序:") };
+                let label = if active { egui::RichText::new("> 順序:").color(egui::Color32::YELLOW) } else { egui::RichText::new("  順序:") };
                 ui.label(label);
                 changed |= ui.radio_value(&mut config.sort_order, SortOrder::Ascending, "昇順").changed();
                 changed |= ui.radio_value(&mut config.sort_order, SortOrder::Descending, "降順").changed();
@@ -198,11 +202,57 @@ pub fn sort_settings_window(
 
             ui.separator();
             let active = *focus_idx == 2;
-            let check_text = if active { egui::RichText::new("自然順（数字の大きさを考慮）").color(egui::Color32::YELLOW) } else { egui::RichText::new("自然順（数字の大きさを考慮）") };
+            let check_text = if active { egui::RichText::new("> 自然順（数字の大きさを考慮）").color(egui::Color32::YELLOW) } else { egui::RichText::new("  自然順（数字の大きさを考慮）") };
             if ui.checkbox(&mut config.sort_natural, check_text).changed() { changed = true; }
             if active && (arr_left || arr_right) { config.sort_natural = !config.sort_natural; changed = true; }
+            });
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(12.0);
+                if ui.button("閉じる").clicked() { *show = false; }
+                ui.add_space(12.0);
+                ui.separator();
+            });
         });
     changed
+}
+
+/// デバッグ情報を表示するウィンドウ
+pub fn debug_window(
+    ctx: &egui::Context,
+    show: &mut bool,
+    manager: &manager::Manager,
+) {
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { *show = false; }
+
+    egui::Window::new("デバッグ情報")
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .fixed_size([400.0, 450.0])
+        .collapsible(false)
+        .resizable(true)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.label(format!("メモリ使用量: {}", integrator::get_memory_usage_str()));
+                ui.label(format!("キャッシュ使用数: {} / {}", manager.cache_len(), crate::constants::cache::CACHE_MAX));
+                let cache_kb = manager.total_cache_size_bytes() / 1024;
+                ui.label(format!("キャッシュサイズ (推定): {} KB", cache_kb));
+                ui.label(format!("リスティング中: {}", if manager.is_listing { "はい" } else { "いいえ" }));
+                ui.separator();
+                ui.label(format!("現在のページ (current): {}", manager.current + 1));
+                ui.label(format!("ターゲット (target_index): {}", manager.target_index + 1));
+                ui.label(format!("全エントリ数: {}", manager.entries.len()));
+                if let Some(path) = &manager.archive_path {
+                    ui.label(format!("パス: {}", path.display()));
+                }
+            });
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(12.0);
+                if ui.button("閉じる").clicked() { *show = false; }
+                ui.add_space(12.0);
+                ui.separator();
+            });
+        });
 }
 
 /// キーコンフィグ画面で表示するアクション名の日本語翻訳マップ
@@ -212,16 +262,16 @@ fn get_action_label(id: &str) -> &str {
         "NextPage" => "次のページを表示",
         "PrevPageSingle" => "前のページを表示 (1枚送り)",
         "NextPageSingle" => "次のページを表示 (1枚送り)",
-        "Left" => "※左 (移動/ツリー操作)",
-        "Right" => "※右 (移動/ツリー操作)",
-        "Up" => "※上 (移動/ツリー操作)",
-        "Down" => "※下 (移動/ツリー操作)",
-        "Enter" => "※決定 (ツリー選択/ダイアログ)",
+        "Left" => "左 (移動/ツリー操作)",
+        "Right" => "右 (移動/ツリー操作)",
+        "Up" => "上 (移動/ツリー操作)",
+        "Down" => "下 (移動/ツリー操作)",
+        "Enter" => "決定 (ツリー選択/ダイアログ)",
         "OpenKeyConfig" => "キーコンフィグ画面を開く",
         "ToggleFullscreen" => "全画面表示の切替",
         "ToggleBorderless" => "ボーダレス全画面の切替",
         "Escape" => "閉じる/解除/終了",
-        "ToggleTree" => "※ディレクトリツリーの表示切替",
+        "ToggleTree" => "ディレクトリツリーの表示切替",
         "ToggleFit" => "画像フィットモードの切替",
         "ZoomIn" => "拡大",
         "ZoomOut" => "縮小",
@@ -243,6 +293,7 @@ fn get_action_label(id: &str) -> &str {
         "ToggleMangaRtl" => "右開き/左開きの切替",
         "Quit" => "アプリを終了",
         "ToggleBg" => "背景色の切替",
+        "ToggleDebug" => "デバッグ情報の表示切替",
         _ => id,
     }
 }
@@ -253,6 +304,9 @@ pub fn key_config_window(
     config: &mut config::Config,
     capturing_for: &mut Option<String>,
 ) -> bool {
+    // キー入力待ち状態（録画中）でない場合のみ、ESCで閉じる
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && capturing_for.is_none() { *show = false; }
+
     let mut changed = false;
     egui::Window::new("キーコンフィグの設定")
         .fixed_size([500.0, 550.0])
@@ -260,20 +314,14 @@ pub fn key_config_window(
         .collapsible(false)
         .resizable(true)
         .show(ctx, |ui| {
-            // フッターを先に定義して最下段に固定
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.add_space(12.0);
-                if ui.button("閉じる").clicked() { *show = false; }
-                ui.add_space(12.0);
-                ui.separator();
-            });
-
             ui.label("各アクションに割り当てるキーを設定します。");
             ui.label("・カンマ区切りで複数指定可能 (例: A, Space)");
             ui.label("・修飾キーは + で連結 (例: Ctrl+R, Alt+Enter)");
             ui.add_space(8.0);
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            let scroll_height = ui.available_height() - 60.0;
+
+            egui::ScrollArea::vertical().max_height(scroll_height).show(ui, |ui| {
                 let conflicts = {
                     // ツリー操作用のモーダルなキー設定を分離して重複チェックを行う
                     let tree_modal_actions: HashSet<&str> = ["Up", "Down", "Left", "Right", "Enter"].into_iter().collect();
@@ -305,10 +353,10 @@ pub fn key_config_window(
 
                 let mut shown = HashSet::new();
                 let categories = [
-                    ("📖 移動・ページ送り", vec!["PrevPage", "NextPage", "PrevPageSingle", "NextPageSingle", "FirstPage", "LastPage", "PrevDir", "NextDir"]),
-                    ("🎨 画像操作", vec!["ToggleFit", "ZoomIn", "ZoomOut", "ToggleManga", "ToggleMangaRtl", "ToggleLinear", "ToggleBg", "RotateCW", "RotateCCW"]),
-                    ("📁 フォルダ・ツリー操作 (※)", vec!["Up", "Down", "Left", "Right", "Enter", "ToggleTree", "RevealExplorer"]),
-                    ("⚙ システム・その他", vec!["ToggleFullscreen", "ToggleBorderless", "Escape", "SortSettings", "OpenKeyConfig", "OpenExternal1", "OpenExternal2", "OpenExternal3", "OpenExternal4", "OpenExternal5", "Quit"]),
+                    ("移動・ページ送り", vec!["PrevPage", "NextPage", "PrevPageSingle", "NextPageSingle", "FirstPage", "LastPage", "PrevDir", "NextDir"]),
+                    ("画像操作", vec!["ToggleFit", "ZoomIn", "ZoomOut", "ToggleManga", "ToggleMangaRtl", "ToggleLinear", "ToggleBg", "RotateCW", "RotateCCW"]),
+                    ("フォルダ・ツリー操作", vec!["Up", "Down", "Left", "Right", "Enter", "ToggleTree", "RevealExplorer"]),
+                    ("システム・その他", vec!["ToggleFullscreen", "ToggleBorderless", "Escape", "SortSettings", "OpenKeyConfig", "OpenExternal1", "OpenExternal2", "OpenExternal3", "OpenExternal4", "OpenExternal5", "Quit"]),
                 ];
 
                 for (cat_name, key_ids) in categories {
@@ -331,7 +379,7 @@ pub fn key_config_window(
                                                 ui.spacing_mut().item_spacing.x = 2.0;
                                                 ui.label(RichText::new(get_action_label(key_id)).small());
                                                 if conflicts.contains(key_id) {
-                                                    ui.label(RichText::new("⚠").color(Color32::RED))
+                                                    ui.label(RichText::new("!").color(Color32::RED))
                                                         .on_hover_text("他のアクションとキーが重複しています");
                                                 }
                                             });
@@ -345,7 +393,7 @@ pub fn key_config_window(
                                                 }
                                                 
                                                 let is_capturing = capturing_for.as_deref() == Some(key_id);
-                                                let btn_text = if is_capturing { "⏺…" } else { "⏺" };
+                                                let btn_text = if is_capturing { "入力待ち..." } else { "設定" };
                                                 if ui.selectable_label(is_capturing, btn_text).clicked() {
                                                     if is_capturing { *capturing_for = None; }
                                                     else { *capturing_for = Some(key_id.to_string()); }
@@ -375,7 +423,7 @@ pub fn key_config_window(
                                 ui.spacing_mut().item_spacing.x = 2.0;
                                 ui.label(RichText::new(&key).small());
                                 if conflicts.contains(&key) {
-                                    ui.label(RichText::new("⚠").color(Color32::RED))
+                                    ui.label(RichText::new("!").color(Color32::RED))
                                         .on_hover_text("他のアクションとキーが重複しています");
                                 }
                             });
@@ -387,7 +435,8 @@ pub fn key_config_window(
                                     changed = true;
                                 }
                                 let is_capturing = capturing_for.as_deref() == Some(&key);
-                                if ui.selectable_label(is_capturing, "⏺").clicked() {
+                                let btn_text = if is_capturing { "入力待ち..." } else { "設定" };
+                                if ui.selectable_label(is_capturing, btn_text).clicked() {
                                     if is_capturing { *capturing_for = None; }
                                     else { *capturing_for = Some(key.clone()); }
                                 }
@@ -396,6 +445,13 @@ pub fn key_config_window(
                         }
                     });
                 }
+            });
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(12.0);
+                if ui.button("閉じる").clicked() { *show = false; }
+                ui.add_space(12.0);
+                ui.separator();
             });
         });
     changed
@@ -406,29 +462,39 @@ pub fn main_menu_bar(
     config: &config::Config,
     manager: &manager::Manager,
     display_mode: DisplayMode,
+    manga_mode: bool,
     show_tree: bool,
+    show_debug: bool,
 ) -> Option<ViewerAction> {
     let mut action = None;
     TopBottomPanel::top("top_panel").show(ctx, |ui| {
         menu::bar(ui, |ui| {
             ui.menu_button("ファイル", |ui| {
-                if ui.button("フォルダを開く…").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenFolder); }
+                if ui.button("フォルダを開く...").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenFolder); }
                 ui.separator();
                 if ui.add_enabled(manager.archive_path.is_some(), Button::new("エクスプローラーで表示 (BS)")).clicked() {
                     ui.close_menu(); action = Some(ViewerAction::RevealInExplorer);
                 }
                 ui.menu_button("最近開いたファイル", |ui| {
-                    // ここに将来的に履歴を表示する
-                    ui.label(RichText::new("（履歴なし）").weak());
+                    if config.recent_paths.is_empty() {
+                        ui.label(RichText::new("（履歴なし）").weak());
+                    } else {
+                        for path in &config.recent_paths {
+                            if ui.button(utils::get_display_name(std::path::Path::new(path))).clicked() {
+                                ui.close_menu(); action = Some(ViewerAction::OpenRecent(path.clone()));
+                            }
+                        }
+                    }
                 });
-                ui.menu_button("送る...", |ui| {
+                ui.menu_button("送る", |ui| {
                     for (i, app) in config.external_apps.iter().enumerate() {
                         if ui.add_enabled(manager.archive_path.is_some() && !app.exe.is_empty(), Button::new(&app.name)).clicked() {
                             ui.close_menu(); action = Some(ViewerAction::OpenExternal(i));
                         }
                     }
+                    ui.separator();
+                    if ui.button("外部アプリ設定...").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenExternalSettings); }
                 });
-                if ui.button("外部アプリ設定…").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenExternalSettings); }
                 ui.separator();
                 if ui.button("終了").clicked() { action = Some(ViewerAction::Exit); }
             });
@@ -446,19 +512,34 @@ pub fn main_menu_bar(
                 if ui.button("拡大 (+)").clicked() { action = Some(ViewerAction::ZoomIn); }
                 if ui.button("縮小 (-)").clicked() { action = Some(ViewerAction::ZoomOut); }
                 ui.separator();
-                if ui.selectable_label(false, "マンガモード (M)").clicked() { ui.close_menu(); action = Some(ViewerAction::ToggleManga); }
+                if ui.selectable_label(manga_mode, "マンガモード (M)").clicked() { ui.close_menu(); action = Some(ViewerAction::ToggleManga); }
                 if ui.selectable_label(config.manga_rtl, "右開き表示 (Y)").clicked() { ui.close_menu(); action = Some(ViewerAction::ToggleMangaRtl); }
                 if ui.selectable_label(show_tree, "ツリー表示 (T)").clicked() { ui.close_menu(); action = Some(ViewerAction::ToggleTree); }
-                if ui.button("ソートの設定 (S)").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenSortSettings); }
+                if ui.button("ソートの設定 (S)...").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenSortSettings); }
                 ui.separator();
                 ui.menu_button("画像の補正 (I)", |ui| {
                     for (m, label) in [
                         (FilterMode::Nearest, "なし (Nearest)"),
                         (FilterMode::Bilinear, "バイリニア (線形)"),
-                        (FilterMode::Bicubic, "※バイキュービック (双三次)"),
-                        (FilterMode::Lanczos, "※ランチョス (高品質)"),
+                        (FilterMode::Bicubic, "バイキュービック (双三次)"),
+                        (FilterMode::Lanczos, "ランチョス (高品質)"),
                     ] {
                         if ui.selectable_label(config.filter_mode == m, label).clicked() { ui.close_menu(); action = Some(ViewerAction::ToggleLinear); }
+                    }
+                });
+                ui.menu_button("ウィンドウサイズ", |ui| {
+                    for (w, h, label) in [
+                        (640, 480, "VGA (640x480)"),
+                        (800, 600, "SVGA (800x600)"),
+                        (1024, 768, "XGA (1024x768)"),
+                        (1280, 960, "Quad-VGA (1280x960)"),
+                        (1400, 1050, "SXGA+ (1400x1050)"),
+                    ] {
+                        if ui.button(label).clicked() { ui.close_menu(); action = Some(ViewerAction::ResizeWindow(w, h)); }
+                    }
+                    ui.separator();
+                    if ui.selectable_label(!config.window_resizable, "ウィンドロック").clicked() {
+                        ui.close_menu(); action = Some(ViewerAction::ToggleWindowResizable);
                     }
                 });
                 if ui.selectable_label(config.always_on_top, "常に手前に表示").clicked() {
@@ -494,11 +575,76 @@ pub fn main_menu_bar(
                 if ui.selectable_label(config.allow_multiple_instances, "複数起動を許可").clicked() {
                     ui.close_menu(); action = Some(ViewerAction::ToggleMultipleInstances);
                 }
-                if ui.button("キーコンフィグ…").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenKeyConfig); }
+                if ui.button("キーコンフィグ...").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenKeyConfig); }
+                if ui.selectable_label(show_debug, "デバッグ情報...").clicked() {
+                    ui.close_menu(); action = Some(ViewerAction::ToggleDebug);
+                }
+                ui.separator();
+                ui.label("レンダラー (再起動後に反映):");
+                if ui.selectable_label(config.renderer == config::RendererMode::Glow, "OpenGL (軽量)").clicked() {
+                    ui.close_menu(); action = Some(ViewerAction::SetRenderer(config::RendererMode::Glow));
+                }
+                if ui.selectable_label(config.renderer == config::RendererMode::Wgpu, "WGPU (互換性)").clicked() {
+                    ui.close_menu(); action = Some(ViewerAction::SetRenderer(config::RendererMode::Wgpu));
+                }
+                ui.separator();
+                if ui.button("このソフトについて...").clicked() {
+                    ui.close_menu(); action = Some(ViewerAction::About);
+                }
             });
         });
     });
     action
+}
+
+pub fn about_window(ctx: &egui::Context, show: &mut bool) {
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { *show = false; }
+    egui::Window::new("Hinjaku について")
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .fixed_size([400.0, 450.0])
+        .collapsible(false)
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading("Hinjaku");
+                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.label("吹けば飛ぶよな軽量ビューア");
+            });
+            ui.separator();
+            ui.label("このソフトウェアは以下のオープンソースライブラリを使用しています:");
+            ui.add_space(4.0);
+
+            egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                let licenses = [
+                    ("eframe / egui", "MIT / Apache-2.0", "https://github.com/emilk/egui"),
+                    ("image", "MIT", "https://github.com/image-rs/image"),
+                    ("zip-rs", "MIT", "https://github.com/zip-rs/zip"),
+                    ("sevenz-rust", "Apache-2.0", "https://github.com/mcmunder/sevenz-rust"),
+                    ("rust-ini", "MIT", "https://github.com/amrayn/rust-ini"),
+                    ("windows-sys", "MIT / Apache-2.0", "https://github.com/microsoft/windows-rs"),
+                    ("rfd", "MIT", "https://github.com/PolyMeilex/rfd"),
+                ];
+                for (name, license, url) in licenses {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(name).strong());
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.label(RichText::new(license).small());
+                            });
+                        });
+                        ui.label(RichText::new(url).small().weak());
+                        ui.add_space(4.0);
+                    });
+                }
+            });
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(12.0);
+                if ui.button("閉じる").clicked() { *show = false; }
+                ui.add_space(12.0);
+                ui.separator();
+            });
+        });
 }
 
 pub fn bottom_toolbar(
@@ -514,7 +660,14 @@ pub fn bottom_toolbar(
     TopBottomPanel::bottom("toolbar").show(ctx, |ui| {
         ui.horizontal(|ui| {
             let has = !manager.entries.is_empty();
-            if ui.add_enabled(has, Button::new("◀")).clicked() { action = Some(ViewerAction::PrevPage); }
+            
+            let accent = ui.visuals().selection.bg_fill;
+
+            let mut left_btn = Button::new("<");
+            if !config.manga_rtl {
+                left_btn = left_btn.fill(accent);
+            }
+            if ui.add_enabled(has, left_btn).clicked() { action = Some(ViewerAction::PrevPage); }
             
             if has {
                 let max_idx = manager.entries.len().saturating_sub(1);
@@ -527,50 +680,47 @@ pub fn bottom_toolbar(
                 ui.label(format!("{}/{}", manager.target_index + 1, manager.entries.len()));
             }
 
-            if ui.add_enabled(has, Button::new("▶")).clicked() { action = Some(ViewerAction::NextPage); }
+            let mut right_btn = Button::new(">");
+            if config.manga_rtl {
+                right_btn = right_btn.fill(accent);
+            }
+            if ui.add_enabled(has, right_btn).clicked() { action = Some(ViewerAction::NextPage); }
+
             ui.separator();
-            let ml = if manga_mode { "📖 2P" } else { "📄 1P" };
+            let ml = if manga_mode { "2P" } else { "1P" };
             if ui.button(ml).clicked() { action = Some(ViewerAction::ToggleManga); }
             ui.separator();
             
             if has {
                 let meta = &manager.entries_meta[manager.target_index];
-                let short = utils::get_display_name(std::path::Path::new(&meta.name));
+                let name = utils::get_display_name(std::path::Path::new(&meta.name));
+                let size = utils::format_size(meta.size);
+                let date = utils::format_timestamp(meta.mtime);
                 
-                let file_size = if meta.size >= 1024 * 1024 {
-                    format!("{:.1} MB", meta.size as f64 / (1024.0 * 1024.0))
-                } else if meta.size >= 1024 {
-                    format!("{:.0} KB", meta.size as f64 / 1024.0)
-                } else {
-                    format!("{} B", meta.size)
-                };
-
-                let res_str = if let Some(tex) = manager.get_first_tex(manager.target_index) {
+                let res = if let Some(tex) = manager.get_first_tex(manager.target_index) {
                     let s = tex.size();
                     format!("{}x{}", s[0], s[1])
-                } else {
-                    "---x---".to_string()
+                } else { "---x---".to_string() };
+
+                let sort = format!("{} {}", 
+                    match config.sort_mode { SortMode::Name => "Name", SortMode::Mtime => "Day", SortMode::Size => "Size" },
+                    if config.sort_order == SortOrder::Ascending { "Asc" } else { "Desc" }
+                );
+
+                let filter = match config.filter_mode {
+                    FilterMode::Nearest => "Nearest",
+                    FilterMode::Bilinear => "Bilinear",
+                    FilterMode::Bicubic => "Bicubic",
+                    FilterMode::Lanczos => "Lanczos",
                 };
 
-                let day_str = integrator::format_timestamp(meta.mtime);
-                let sort_label = match config.sort_mode {
-                    SortMode::Name => "Name", SortMode::Mtime => "Day", SortMode::Size => "Size",
-                };
-                let sort_icon = if config.sort_order == SortOrder::Ascending { "▲" } else { "▼" };
-            let filter_label = match config.filter_mode {
-                FilterMode::Nearest => "Nearest",
-                FilterMode::Bilinear => "Bilinear",
-                FilterMode::Bicubic => "※Bicubic",
-                FilterMode::Lanczos => "※Lanczos",
-            };
-            ui.label(format!("{} | {} | {} | {} | [{} {}] | {}", short, file_size, res_str, day_str, sort_label, sort_icon, filter_label));
+                ui.label(format!("{} | {} | {} | {} | [{}] | {}", name, size, res, date, sort, filter));
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if display_mode == DisplayMode::Manual { ui.label(format!("{:.0}%", zoom * 100.0)); }
-                    let mode_str = match display_mode {
+                    ui.label(match display_mode {
                         DisplayMode::Fit => "Fit", DisplayMode::WindowFit => "WinFit", DisplayMode::Manual => "Manual",
-                    };
-                    ui.label(mode_str);
+                    });
                 });
             } else {
                 ui.label("待機中...");
@@ -604,19 +754,24 @@ pub fn sidebar_ui(
         ui.separator();
         if let Some(sel) = nav_tree.selected.clone() {
             let count = nav_tree.get_image_count(&sel);
-            ui.label(RichText::new(format!("選択: {} ({} 枚)", utils::get_display_name(&sel), count)).small());
+            ui.label(format!("選択中: {} ({}枚)", utils::get_display_name(&sel), count));
         }
     });
 }
 
 pub fn ui_dir_tree(nav_tree: &mut manager::NavTree, current_path: &Option<PathBuf>, ui: &mut egui::Ui, path: PathBuf, ctx: &egui::Context, open_req: &mut Option<PathBuf>) {
-    let filename = if path.parent().is_none() { path.to_string_lossy().to_string() } else { utils::get_display_name(&path) };
+    let mut filename = if path.parent().is_none() { path.to_string_lossy().to_string() } else { utils::get_display_name(&path) };
+    
+    // 隠し属性を持つ場合は名前に * を付与
+    if utils::is_hidden(&path) {
+        filename.push('*');
+    }
+
     let kind = utils::detect_kind(&path);
     let is_archive = matches!(kind, utils::ArchiveKind::Zip | utils::ArchiveKind::SevenZ);
-    let icon = if is_archive { "📦 " } else { "📁 " };
     let is_current = current_path.as_ref() == Some(&path);
     let is_selected = nav_tree.selected.as_ref() == Some(&path);
-    let text = RichText::new(format!("{}{}", icon, filename));
+    let text = RichText::new(filename);
     let text = if is_current { text.color(Color32::YELLOW) } else { text };
     let text = if is_selected { text.background_color(ui.visuals().selection.bg_fill.linear_multiply(0.3)) } else { text };
 

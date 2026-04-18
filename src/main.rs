@@ -14,10 +14,19 @@ mod input;
 
 fn main() -> eframe::Result<()> {
     // 1. 引数解析 (integrator への分離)
-    let (config_name, path_arg) = integrator::parse_args(&std::env::args().collect::<Vec<_>>());
+    let (config_name, path_arg, debug_cli, renderer_override) = integrator::parse_args(&std::env::args().collect::<Vec<_>>());
+
+    if debug_cli {
+        integrator::setup_console();
+    }
 
     // 2. 設定読み込み (INI対応)
-    let (config, _config_path) = config::load_config_file(config_name.as_deref());
+    let (mut config, _config_path) = config::load_config_file(config_name.as_deref());
+
+    // コマンドライン引数によるレンダラーの強制上書き
+    if let Some(r) = renderer_override {
+        config.renderer = if r == "wgpu" { config::RendererMode::Wgpu } else { config::RendererMode::Glow };
+    }
 
     // 3. 二重起動防止 (integrator への分離)
     let mut _mutex_handle = 0isize;
@@ -32,27 +41,35 @@ fn main() -> eframe::Result<()> {
         }
     }
 
-    // ウィンドウタイトルの決定 (デフォルト以外なら設定ファイル名を表示)
-    let title = if let Some(ref name) = config_name {
-        if name != "config.ini" {
-            format!("Hinjaku - {}", name)
-        } else {
-            "Hinjaku".to_string()
-        }
-    } else {
-        "Hinjaku".to_string()
+    let renderer_str = match config.renderer {
+        config::RendererMode::Glow => "OpenGL",
+        config::RendererMode::Wgpu => "Wgpu",
     };
+
+    // ウィンドウタイトルの決定 (デフォルト以外なら設定ファイル名を表示)
+    let config_part = config_name.as_ref()
+        .filter(|&n| n != "config.ini")
+        .map(|n| format!(" {{{}}}", n))
+        .unwrap_or_default();
+
+    let title = format!("Hinjaku - {}{}", renderer_str, config_part);
 
     // 4. UI起動設定
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(title.clone())
             .with_icon(std::sync::Arc::new(integrator::create_h_icon()))
-            .with_inner_size([1024.0, 768.0])
-            .with_drag_and_drop(true),
-        // エラーの原因となっている wgpu_options を削除し、
-        // より軽量な OpenGL (glow) レンダラーを指定します。
-        renderer: eframe::Renderer::Glow,
+            .with_inner_size([config.window_width, config.window_height])
+            .with_position([config.window_x, config.window_y])
+            .with_resizable(config.window_resizable)
+            .with_drag_and_drop(true)
+            .with_maximized(config.window_maximized),
+        // 設定に基づいてレンダラーを切り替える
+        renderer: if config.renderer == config::RendererMode::Wgpu {
+            eframe::Renderer::Wgpu
+        } else {
+            eframe::Renderer::Glow
+        },
         // 不要なバッファを無効化してメモリ消費を抑える
         multisampling: 0,
         depth_buffer: 0,
@@ -70,7 +87,7 @@ fn main() -> eframe::Result<()> {
             let title_clone = title.clone();
             move |cc| {
             let archive_reader = std::sync::Arc::new(archive::DefaultArchiveReader);
-            Box::new(viewer::App::new(cc, initial_path, config_name, archive_reader, &title_clone))
+            Box::new(viewer::App::new(cc, initial_path, config_name, archive_reader, &title_clone, debug_cli))
         }}),
     )
 }

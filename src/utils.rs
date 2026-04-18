@@ -28,6 +28,17 @@ pub fn clean_path(path: &Path) -> PathBuf {
     p
 }
 
+/// ファイルサイズを表示用に整形する
+pub fn format_size(size: u64) -> String {
+    if size >= 1024 * 1024 {
+        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    } else if size >= 1024 {
+        format!("{:.0} KB", size as f64 / 1024.0)
+    } else {
+        format!("{} B", size)
+    }
+}
+
 /// 表示用にパスからファイル名（またはルート名）を抽出する
 pub fn get_display_name(path: &Path) -> String {
     path.file_name()
@@ -62,6 +73,42 @@ pub fn detect_kind(path: &Path) -> ArchiveKind {
     } else {
         ArchiveKind::Plain
     }
+}
+
+/// パスが隠し属性（Hidden）を持っているか判定する
+/// Windows以外ではドットファイル（.）を隠しファイルとみなす
+pub fn is_hidden(path: &Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        std::fs::metadata(path).map(|m| m.file_attributes() & 0x2 != 0).unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    path.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(false)
+}
+
+/// パスがWindowsのシステム属性（System）を持っているか判定する
+pub fn is_system(path: &Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        std::fs::metadata(path).map(|m| {
+            let attr = m.file_attributes();
+            attr & 0x4 != 0
+        }).unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    false
+}
+
+/// 秒（UNIXタイム）を yyyy/mm/dd 形式の文字列に変換する (chrono 依存排除用)
+pub fn format_timestamp(secs: u64) -> String {
+    if secs == 0 { return "----/--/--".to_string(); }
+    let days = secs / 86400;
+    let year = 1970 + (days / 365); // 概算
+    let month = ((days % 365) / 30) + 1;
+    let day = (days % 30) + 1;
+    format!("{:04}/{:02}/{:02}", year, month.min(12), day.min(31))
 }
 
 // ── 自然順ソート ─────────────────────────────────────────────────────────────
