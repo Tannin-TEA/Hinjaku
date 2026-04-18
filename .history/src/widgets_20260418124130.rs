@@ -760,12 +760,22 @@ pub fn sidebar_ui(
 }
 
 pub fn ui_dir_tree(nav_tree: &mut manager::NavTree, current_path: &Option<PathBuf>, ui: &mut egui::Ui, path: PathBuf, ctx: &egui::Context, open_req: &mut Option<PathBuf>) {
-    // システム属性または隠し属性を持つパスは一切表示しない（リセット対応）
-    if utils::is_system(&path) || utils::is_hidden(&path) {
+    // 以下のルールで表示判定を行う：
+    // 1. ドライブ -> 表示 (utils::is_system 内で判定)
+    // 2. システム属性、または特定の記号 ($ . ¥) で始まるパス -> 非表示
+    // 3. アクセス権限のない特殊フォルダ -> 非表示
+    // 4. 隠しフォルダ -> 表示 (名前の末尾に * を付与)
+    // 5. 通常のフォルダ -> 表示
+    if utils::is_system(&path) {
         return;
     }
 
-    let filename = if path.parent().is_none() { path.to_string_lossy().to_string() } else { utils::get_display_name(&path) };
+    let mut filename = if path.parent().is_none() { path.to_string_lossy().to_string() } else { utils::get_display_name(&path) };
+    
+    // 4. 隠し属性のみを持つ場合は名前に * を付与して区別する
+    if utils::is_hidden(&path) {
+        filename.push('*');
+    }
 
     let kind = utils::detect_kind(&path);
     let is_archive = matches!(kind, utils::ArchiveKind::Zip | utils::ArchiveKind::SevenZ);

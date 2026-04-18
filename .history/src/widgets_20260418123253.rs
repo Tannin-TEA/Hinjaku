@@ -760,12 +760,18 @@ pub fn sidebar_ui(
 }
 
 pub fn ui_dir_tree(nav_tree: &mut manager::NavTree, current_path: &Option<PathBuf>, ui: &mut egui::Ui, path: PathBuf, ctx: &egui::Context, open_req: &mut Option<PathBuf>) {
-    // システム属性または隠し属性を持つパスは一切表示しない（リセット対応）
-    if utils::is_system(&path) || utils::is_hidden(&path) {
+    // システム属性（System）を持つパスをフィルタリング。
+    // ただし、ツリーの起点となるドライブのルートなどは除外しない（utils::is_system 内で判定）。
+    if utils::is_system(&path) {
         return;
     }
 
-    let filename = if path.parent().is_none() { path.to_string_lossy().to_string() } else { utils::get_display_name(&path) };
+    let mut filename = if path.parent().is_none() { path.to_string_lossy().to_string() } else { utils::get_display_name(&path) };
+    
+    // 隠し属性を持つ場合は名前に * を付与
+    if utils::is_hidden(&path) {
+        filename.push('*');
+    }
 
     let kind = utils::detect_kind(&path);
     let is_archive = matches!(kind, utils::ArchiveKind::Zip | utils::ArchiveKind::SevenZ);

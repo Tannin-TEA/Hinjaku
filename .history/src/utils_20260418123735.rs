@@ -80,11 +80,6 @@ pub fn detect_kind(path: &Path) -> ArchiveKind {
 pub fn is_hidden(path: &Path) -> bool {
     #[cfg(target_os = "windows")]
     {
-        // ドライブのルート（"C:\" 等）は常に表示する
-        if path.parent().is_none() {
-            return false;
-        }
-
         use std::os::windows::fs::MetadataExt;
         std::fs::metadata(path).map(|m| m.file_attributes() & 0x2 != 0).unwrap_or(false)
     }
@@ -96,7 +91,7 @@ pub fn is_hidden(path: &Path) -> bool {
 pub fn is_system(path: &Path) -> bool {
     #[cfg(target_os = "windows")]
     {
-        // ドライブのルート（"C:\" 等）は常に表示する
+        // 1. ドライブ (親パスがないルート) は表示対象とする
         if path.parent().is_none() {
             return false;
         }
@@ -105,11 +100,12 @@ pub fn is_system(path: &Path) -> bool {
         match std::fs::metadata(path) {
             Ok(m) => {
                 let attr = m.file_attributes();
-                // システム属性 (0x4) があれば非表示
+                // 2 & 3. システム属性 (0x4) があれば、隠し属性の有無に関わらず非表示
                 attr & 0x4 != 0
             }
-            // メタデータが取れない場合は、ドライブ等の特殊なパスの可能性があるため表示する
-            Err(_) => false,
+            // メタデータが取れない（アクセス拒否等）場合は、
+            // 特殊なシステムフォルダである可能性が高いため非表示として扱う
+            Err(_) => true,
         }
     }
     #[cfg(not(target_os = "windows"))]
