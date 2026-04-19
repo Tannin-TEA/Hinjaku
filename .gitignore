@@ -4,6 +4,8 @@
 hinjaku_debug.log
 
 # 今回追加するファイル
+/.history
+/.claude
 /MEMO
 /AI-Prompt.txt
 /Prompt.txt
@@ -13,3 +15,4 @@ hinjaku_debug.log
 /Gemini-prompt-01.md
 /Gemini-prompt-02.md
 /pdfium.dll
+/yobi
