@@ -1,0 +1,24 @@
+# パス管理の根本刷新（Anti-UNC Strategy）
+
+## 1. 現状の課題
+Windowsにおいて `PathBuf` や `std::fs::canonicalize` を使用すると、OSが自動的に `\\?\` (UNCプリフィックス) を付与することがある。
+エクスプローラーや外部アプリ（Photoshop等）は、この形式の引数を受け取るとパスを認識できずエラーとなる。
+
+## 2. 根本対策：Path-as-String 方式
+「パスをオブジェクト (`PathBuf`) として扱う」ことを、OSとの低レイヤーなI/O時のみに限定する。
+アプリ内の流通・保持・外部送信においては、以下のルールに従った「純粋な文字列 (`String`)」を使用する。
+
+- **入力時（境界）**: 
+  CLI引数、ドラッグ＆ドロップ、ファイルダイアログでパスを受け取った瞬間、直ちに `utils::to_clean_string` を通して `String` に固定する。
+  この時点で `\\?\` は物理的に排除され、二度と付与されない。
+
+- **保持（Manager/Config）**:
+  `archive_path` や履歴などのデータは可能な限り `String` で保持する。
+
+- **出力時（Integrator）**:
+  外部送信関数（`launch_external`, `reveal_in_explorer`, IPC送信）は、加工済みの `String` を引数として受け取る。
+  関数内部ではパスの変換（置換処理）を一切行わず、受け取った文字列をそのまま `ShellExecuteW` 等のAPIへ流し込む。
+
+## 3. 禁止事項
+- `integrator.rs` 内部での `replace(r"\\?\", "")` の実施（事後処理の禁止）。
+- `PathBuf` の `display()` や `to_string_lossy()` を外部引数に直接使用すること。

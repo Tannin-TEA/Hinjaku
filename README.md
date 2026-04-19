@@ -24,9 +24,14 @@ hinjaku.exe [パス] [-c 設定名] [--debug]
 - **`-c`, `--config` [設定名]**: 使用する INI プロファイル名を指定。
   - 例: `-c sub` は `sub.ini` を読み込みます。未指定時は `config.ini`。
 
-  **`-O`: デコードをOpenGLで起動  
-  **`-W`: デコードをWGPUで起動
+- **`-O`**: デコード（レンダラー）を OpenGL (Glow) で起動します。
+- **`-W`**: デコード（レンダラー）を WGPU で起動します。
 - **`-d`,`--debug`**: 起動時にコンソールを開き、メモリ使用量やキャッシュ統計のデバッグログを出力します。
+
+### 外部アプリ連携の変数
+設定ファイル（config.ini）の `Args` 項目で使用できます。
+- **`%P` (または `%F`)**: アーカイブ内のエントリまで含んだ**仮想フルパス**。
+- **`%A` (または `%D`)**: 対象の**物理的な実在パス**。通常時は画像、アーカイブ閲覧時は書庫本体。
 
 ## 技術仕様・内部パラメータ
 
@@ -86,6 +91,94 @@ hinjaku.exe [パス] [-c 設定名] [--debug]
 | **rust-ini** | INI 設定ファイルのパース・保存 |
 | **windows-sys** | Win32 API 連携 (ウィンドウ制御・プロセス起動) |
 | **rfd** | ネイティブなファイル選択ダイアログ |
+
+## 内部設計
+
+### モジュール責務
+
+| モジュール | 層 | 責務 |
+|:---|:---|:---|
+| `main.rs` | エントリ | 引数解析→設定読込→eframe起動の呼び出し順序のみ |
+| `startup.rs` | I/O | CLI引数解析・二重起動防止(Mutex)・コンソールアタッチ・タイトル生成 |
+| `config.rs` | データ+I/O | Config構造体定義・INIファイル読み書き |
+| `types.rs` | データ | DisplayMode / ViewState の定義 |
+| `error.rs` | データ | HinjakuError / Result\<T\> の定義 |
+| `constants.rs` | データ | キャッシュ・UI・画像処理の定数 |
+| `utils.rs` | コア | パス正規化・拡張子判定・ファイルサイズ整形・自然順ソート |
+| `archive.rs` | I/O | ArchiveReader トレイト + DefaultArchiveReader (ZIP/7z/フォルダ) |
+| `manager.rs` | コア | 画像キャッシュ・バックグラウンドロード・プリフェッチ・ページ移動 |
+| `nav_tree.rs` | コア | ディレクトリツリーの構築・選択・展開 |
+| `integrator.rs` | I/O | WM_COPYDATA による単一インスタンス間パス受信・フォント mmap ロード |
+| `window.rs` | I/O | ウィンドウ位置・サイズ・アイコン・中央配置 (Windows API) |
+| `shell.rs` | I/O | 外部アプリ起動・エクスプローラー連携 |
+| `input.rs` | UI | キー・マウス入力の解析と ViewerAction への変換 |
+| `viewer.rs` | UI | eframe::App 実装。状態管理・アクション処理・update() ループ |
+| `painter.rs` | UI | 画像描画（ズーム・マンガモード・回転・背景） |
+| `toast.rs` | UI | トースト通知の管理・表示 |
+| `widgets/` | UI | ViewerAction enum・ツールバー・メニュー・サイドバー・ダイアログ |
+
+### データフロー
+
+```
+[起動]
+  main()
+    → startup::parse_args
+    → config::load_config_file      ← INIファイル読み込み (1回のみ)
+    → startup::check_single_instance
+    → eframe::run_native → App::new(config, config_path, ...)
+
+[ファイルを開く]
+  App::open_path
+    → Manager::open_path
+        → ArchiveReader::list_images  ← ZIP/7z/フォルダ判定
+        → Manager::schedule_prefetch  ← バックグラウンドスレッドに投入
+
+[バックグラウンドロード (ワーカースレッド)]
+  ArchiveReader::read_entry → image decode → TextureHandle → mpsc::Sender
+
+[描画ループ (毎フレーム)]
+  input::capture_key / capture_mouse
+    → widgets → ViewerAction
+    → App::handle_action → 状態更新
+  Manager::poll_results               ← ロード完了テクスチャを受け取る
+  painter::draw_main_area             ← テクスチャ描画
+  window::sync_config_with_window     ← ウィンドウ状態を Config に反映
+```
+
+### 依存関係
+
+```
+main
+ ├─ startup      (引数・プロセス管理)
+ ├─ config       (設定読み書き)
+ ├─ window       (アイコン生成)
+ └─ viewer  [App]
+      ├─ manager
+      │    ├─ archive  (ArchiveReader トレイト)
+      │    └─ utils    (パス・ソート)
+      ├─ painter
+      ├─ input
+      ├─ widgets
+      ├─ window        (位置・サイズ同期)
+      ├─ shell         (外部アプリ)
+      ├─ integrator    (IPC・フォント)
+      ├─ toast
+      └─ config        (設定保存)
+
+依存の方向: UI層 → コア層 → データ層 (逆方向なし)
+```
+
+### 拡張ポイント
+
+| 追加したい機能 | 変更箇所 |
+|:---|:---|
+| 新しいアーカイブ形式 (RAR等) | `archive.rs` の `ArchiveReader` トレイトに実装を追加 |
+| 新しい表示モード | `types.rs` の `DisplayMode` に variant 追加 → `painter.rs` で分岐 |
+| 新しいキー操作・マウス操作 | `widgets/mod.rs` の `ViewerAction` に追加 → `viewer.rs::handle_action` で処理 |
+| 新しいダイアログ・パネル | `widgets/dialogs.rs` に追加 → `viewer.rs::update()` で呼び出し |
+| 設定項目の追加 | `config.rs` の `Config` に追加 → `load_config_file` / `save_config_file` に対応行を追加 |
+
+---
 
 ## 開発憲法 (Immutable Rules)
 

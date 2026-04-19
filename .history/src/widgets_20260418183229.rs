@@ -41,6 +41,7 @@ pub enum ViewerAction {
     ToggleWindowResizable,
     ResizeWindow(u32, u32),
     About,
+    SetMouseAction(u8, String),
 }
 
 pub fn settings_window(
@@ -59,7 +60,7 @@ pub fn settings_window(
         .resizable(true)
         .show(ctx, |ui| {
             ui.label("ショートカットキーやメニューから起動するソフトを5つまで設定できます。");
-            ui.label("%P:フルパス, %A:フォルダパス");
+            ui.label("%P(%F):内部パスまで含む, %A(%D):実在パス(画像/書庫)");
             ui.add_space(8.0);
 
             // フッターの高さを確保したスクロールエリア
@@ -408,6 +409,41 @@ pub fn key_config_window(
                     });
                 }
 
+                ui.add_space(10.0);
+                ui.heading(RichText::new("マウスボタンの割り当て").size(14.0).strong());
+                ui.separator();
+                egui::Grid::new("mouse_buttons_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                    let mouse_actions = [
+                        "PrevPage", "NextPage", "PrevPageSingle", "NextPageSingle", "PrevDir", "NextDir"
+                    ];
+
+                    ui.label("戻るボタン (Mouse4):");
+                    egui::ComboBox::from_id_source("mouse4_combo")
+                        .selected_text(get_action_label(&config.mouse4_action))
+                        .show_ui(ui, |ui| {
+                            for act in mouse_actions {
+                                if ui.selectable_label(config.mouse4_action == act, get_action_label(act)).clicked() {
+                                    config.mouse4_action = act.to_string();
+                                    changed = true;
+                                }
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("進むボタン (Mouse5):");
+                    egui::ComboBox::from_id_source("mouse5_combo")
+                        .selected_text(get_action_label(&config.mouse5_action))
+                        .show_ui(ui, |ui| {
+                            for act in mouse_actions {
+                                if ui.selectable_label(config.mouse5_action == act, get_action_label(act)).clicked() {
+                                    config.mouse5_action = act.to_string();
+                                    changed = true;
+                                }
+                            }
+                        });
+                    ui.end_row();
+                });
+
                 // 未知のキー（INI直接編集時など）
                 let mut remaining_keys: Vec<_> = config.keys.keys()
                     .filter(|k| !shown.contains(*k))
@@ -579,6 +615,18 @@ pub fn main_menu_bar(
                 if ui.selectable_label(show_debug, "デバッグ情報...").clicked() {
                     ui.close_menu(); action = Some(ViewerAction::ToggleDebug);
                 }
+                ui.menu_button("マウスボタン割り当て", |ui| {
+                    ui.menu_button("戻るボタン (Mouse4)", |ui| {
+                        if ui.selectable_label(config.mouse4_action == "PrevPage", "前のページ").clicked() { ui.close_menu(); action = Some(ViewerAction::SetMouseAction(4, "PrevPage".into())); }
+                        if ui.selectable_label(config.mouse4_action == "PrevPageSingle", "前のページ (1枚送り)").clicked() { ui.close_menu(); action = Some(ViewerAction::SetMouseAction(4, "PrevPageSingle".into())); }
+                        if ui.selectable_label(config.mouse4_action == "PrevDir", "前のフォルダ").clicked() { ui.close_menu(); action = Some(ViewerAction::SetMouseAction(4, "PrevDir".into())); }
+                    });
+                    ui.menu_button("進むボタン (Mouse5)", |ui| {
+                        if ui.selectable_label(config.mouse5_action == "NextPage", "次のページ").clicked() { ui.close_menu(); action = Some(ViewerAction::SetMouseAction(5, "NextPage".into())); }
+                        if ui.selectable_label(config.mouse5_action == "NextPageSingle", "次のページ (1枚送り)").clicked() { ui.close_menu(); action = Some(ViewerAction::SetMouseAction(5, "NextPageSingle".into())); }
+                        if ui.selectable_label(config.mouse5_action == "NextDir", "次のフォルダ").clicked() { ui.close_menu(); action = Some(ViewerAction::SetMouseAction(5, "NextDir".into())); }
+                    });
+                });
                 ui.separator();
                 ui.label("レンダラー (再起動後に反映):");
                 if ui.selectable_label(config.renderer == config::RendererMode::Glow, "OpenGL (軽量)").clicked() {

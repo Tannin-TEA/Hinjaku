@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(powershell -Command \"Get-Content 'D:\\\\Code_Folder\\\\archview_gemini\\\\ai_refactor\\\\phase1_structure.md' -Encoding UTF8\")",
+      "Bash(powershell -Command \"[System.IO.File]::ReadAllText\\('D:\\\\Code_Folder\\\\archview_gemini\\\\ai_refactor\\\\phase1_structure.md', [System.Text.Encoding]::GetEncoding\\('shift_jis'\\)\\)\")"
+    ]
+  }
+}
