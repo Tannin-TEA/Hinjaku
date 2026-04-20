@@ -3,7 +3,7 @@ use crate::config::{Config, SortMode, SortOrder, FilterMode};
 pub use crate::nav_tree::NavTree;
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::collections::{HashMap, VecDeque, HashSet};
-use std::io::BufReader;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -107,6 +107,7 @@ pub struct Manager {
     pub open_from_end: bool,
     pub tree: NavTree,
     pub pending_focus: Option<String>,
+    pub pending_go_last: bool,
     pub is_listing: bool,
 
     // --- Loader State ---
@@ -129,7 +130,7 @@ impl Manager {
         current_idx_shared: Arc<AtomicUsize>,
         generation: Arc<AtomicU64>,
         archive_reader: Arc<dyn ArchiveReader>,
-        ctx: egui::Context,
+        worker_ctx: egui::Context,
     ) {
         for _ in 0..loading::WORKER_THREADS {
             let rx = Arc::clone(&req_rx);
@@ -137,10 +138,10 @@ impl Manager {
             let worker_idx = Arc::clone(&current_idx_shared);
             let worker_gen = Arc::clone(&generation);
             let worker_archive_reader = Arc::clone(&archive_reader);
-            let worker_ctx = ctx.clone();
+            let ctx = worker_ctx.clone();
             
             std::thread::spawn(move || {
-                let mut zip_cache: Option<(PathBuf, zip::ZipArchive<BufReader<std::fs::File>>)> = None;
+                let mut zip_cache: Option<(PathBuf, zip::ZipArchive<std::fs::File>)> = None;
                 loop {
                     // ロックをこのスコープ内だけで取得・解放する
                     let req = {
@@ -154,14 +155,15 @@ impl Manager {
                     let current_gen = worker_gen.load(Ordering::Relaxed);
                     if req.generation < current_gen { continue; }
                     let current_idx = worker_idx.load(Ordering::Relaxed);
+                    
+                    // スキップ対象なら、メインスレッドに通知せず静かに捨てる (0.1.0 互換)
                     if req.index != current_idx && (req.index as isize - current_idx as isize).abs() > loading::LOAD_SKIP_DISTANCE_THRESHOLD {
-                        let _ = tx.send(LoadResult { index: req.index, key: req.key, data: Err("SKIPPED".to_string()), generation: req.generation });
                         continue;
                     }
                     
                     let result_data = Self::process_load_request(&req, &mut zip_cache, &worker_archive_reader);
                     let _ = tx.send(LoadResult { index: req.index, key: req.key, data: result_data, generation: req.generation });
-                    worker_ctx.request_repaint();
+                    ctx.request_repaint();
                 }
             });
         }
@@ -170,7 +172,7 @@ impl Manager {
     /// 画像読み込みリクエストを処理する
     fn process_load_request(
         req: &LoadRequest,
-        zip_cache: &mut Option<(PathBuf, zip::ZipArchive<BufReader<std::fs::File>>)>,
+        zip_cache: &mut Option<(PathBuf, zip::ZipArchive<std::fs::File>)>,
         archive_reader: &Arc<dyn ArchiveReader>,
     ) -> std::result::Result<Vec<FrameData>, String> {
         let kind = utils::detect_kind(&req.archive_path);
@@ -178,24 +180,29 @@ impl Manager {
             if matches!(kind, utils::ArchiveKind::Zip) {
                 if zip_cache.as_ref().map(|(p, _)| p != &req.archive_path).unwrap_or(true) {
                 let file = std::fs::File::open(&req.archive_path).map_err(|e| e.to_string())?;
-                let zip = zip::ZipArchive::new(BufReader::new(file)).map_err(|e| e.to_string())?;
+                // ZipArchive は自身でシークを管理するため、BufReader は不要。File を直接渡す。
+                let zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
                 *zip_cache = Some((req.archive_path.clone(), zip));
             }
             let (_, ref mut zip) = zip_cache.as_mut().ok_or("Cache error")?;
             let mut entry = zip.by_index(idx).map_err(|e| e.to_string())?;
-            let mut buf = Vec::new();
-            std::io::copy(&mut entry, &mut buf).map_err(|e| e.to_string())?;
+            // サイズが既知なので、事前に確保して read_to_end を使う方が効率的
+            let mut buf = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
             buf
             } else if matches!(kind, utils::ArchiveKind::Pdf) {
                 if zip_cache.is_some() { *zip_cache = None; }
-                archive_reader.read_entry(&req.archive_path, &req.entry_name, Some(idx)).map_err(|e| e.to_string())?
+                archive_reader.read_entry(&req.archive_path, &req.entry_name, Some(idx), req.max_dim).map_err(|e| e.to_string())?
             } else {
-                archive_reader.read_entry(&req.archive_path, &req.entry_name, Some(idx)).map_err(|e| e.to_string())?
+                // 通常画像は定数の 1920 を使用
+                archive_reader.read_entry(&req.archive_path, &req.entry_name, Some(idx), image::MAX_TEX_DIM).map_err(|e| e.to_string())?
             }
         } else {
             // Plainファイルまたは7zアーカイブからの読み込み
             if zip_cache.is_some() { *zip_cache = None; }
-            archive_reader.read_entry(&req.archive_path, &req.entry_name, None).map_err(|e| e.to_string())?
+            // PDF以外は定数 1920 を上限として扱う
+            let limit = if kind == utils::ArchiveKind::Pdf { req.max_dim } else { image::MAX_TEX_DIM };
+            archive_reader.read_entry(&req.archive_path, &req.entry_name, None, limit).map_err(|e| e.to_string())?
         };
 
         let ext = req.entry_name.to_ascii_lowercase();
@@ -223,7 +230,8 @@ impl Manager {
                     let mut result_frames = Vec::new();
                     for frame in frames {
                         let img = frame.buffer().clone();
-                        let img = downscale_if_needed(img, req.max_dim, req.filter_mode);
+                        // アニメーション画像はPDFではないため、定数の MAX_TEX_DIM (1920) を使用
+                        let img = downscale_if_needed(img, image::MAX_TEX_DIM, req.filter_mode);
                         let img = apply_rotation(img, req.rotation);
                         let (n, d) = frame.delay().numer_denom_ms();
                         let delay_ms = if d > 0 { n / d } else { loading::DEFAULT_ANIM_FRAME_DELAY_MS };
@@ -236,8 +244,15 @@ impl Manager {
             }
         }
 
-        let img = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-        let img = downscale_if_needed(img.to_rgba8(), req.max_dim, req.filter_mode);
+        let img = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8();
+
+        // PDFは既に pdf_handler 側で要求サイズ (req.max_dim) にレンダリングされているため、
+        // ここで再度リサイズを走らせるのはCPUの無駄。PDF以外のみ定数 1920 を上限としてリサイズを行う。
+        let img = if kind == utils::ArchiveKind::Pdf {
+            img
+        } else {
+            downscale_if_needed(img, image::MAX_TEX_DIM, req.filter_mode)
+        };
         let img = apply_rotation(img, req.rotation);
         
         Ok(vec![FrameData { image: img, delay_ms: 0 }])
@@ -271,6 +286,7 @@ impl Manager {
             open_from_end: false,
             tree: NavTree::new(Arc::clone(&archive_reader)),
             pending_focus: None,
+            pending_go_last: false,
             cache: HashMap::new(),
             cache_lru: VecDeque::new(),
             load_tx: req_tx,
@@ -298,10 +314,12 @@ impl Manager {
                         self.entries = self.entries_meta.iter().map(|e| e.name.clone()).collect();
                         if !self.entries.is_empty() {
                             self.apply_sorting(config);
+                            let go_last = self.pending_go_last;
+                            self.pending_go_last = false;
                             if let Some(focus) = self.pending_focus.take() {
                                 self.current = self.entries.iter().position(|n| n.contains(&focus)).unwrap_or(0);
                             } else {
-                                self.current = if self.open_from_end {
+                                self.current = if go_last {
                                     let last = self.entries.len().saturating_sub(1);
                                     if manga && last > 0 {
                                         if (last % 2 == 0) == shift { last } else { last.saturating_sub(1) }
@@ -310,7 +328,7 @@ impl Manager {
                             }
                             self.target_index = self.current;
                             // リストが確定したのでプリフェッチを開始（manga フラグを引き継ぐ）
-                            self.schedule_prefetch(config.filter_mode, manga, image::MAX_TEX_DIM);
+                            self.schedule_prefetch(config.filter_mode, manga, config.pdf_render_size);
                         }
                     }
                     Err(e) => { list_error = Some(e); }
@@ -354,18 +372,12 @@ impl Manager {
                     self.cache_lru.push_back(result.key);
 
                     upload_count += 1;
-
-                    // キャッシュ上限を超えた場合、表示中以外の古い画像を削除
-                    while self.cache_lru.len() > cache::CACHE_MAX {
-                        let t0 = self.entries.get(self.target_index);
-                        let t1 = if manga { self.entries.get(self.target_index + 1) } else { None };
-                        if let Some(pos) = self.cache_lru.iter().position(|k| Some(k) != t0 && Some(k) != t1) {
-                            let old = self.cache_lru.remove(pos).unwrap();
+                    if self.cache_lru.len() > cache::CACHE_MAX {
+                        if let Some(old) = self.cache_lru.pop_front() {
                             self.cache.remove(&old);
-                        } else { break; }
+                        }
                     }
                 }
-                Err(e) if e == "SKIPPED" => {}
                 Err(e) => failures.push((result.index, e)),
             }
             if upload_count >= loading::MAX_TEXTURE_UPLOADS_PER_FRAME { break; }
@@ -375,13 +387,15 @@ impl Manager {
     }
 
     pub fn get_tex(&self, index: usize, now: f64) -> Option<(&TextureHandle, Option<f64>)> {
-        let key = self.entries.get(index)?;
-        self.cache.get(key).map(|c| c.current_frame(now))
+        let entry = self.entries.get(index)?;
+        let key = format!("{}:{}", index, entry);
+        self.cache.get(&key).map(|c| c.current_frame(now))
     }
 
     pub fn get_first_tex(&self, index: usize) -> Option<&TextureHandle> {
-        let key = self.entries.get(index)?;
-        self.cache.get(key).map(|c| c.first_frame())
+        let entry = self.entries.get(index)?;
+        let key = format!("{}:{}", index, entry);
+        self.cache.get(&key).map(|c| c.first_frame())
     }
 
     /// 現在キャッシュに保持されている画像数を返す
@@ -401,17 +415,6 @@ impl Manager {
         }).sum()
     }
 
-    /// 個別のキャッシュ統計（名前とサイズ）を返す
-    pub fn get_cache_stats(&self) -> Vec<(String, usize)> {
-        self.cache.iter().map(|(key, img)| {
-            let size = match img {
-                CachedImage::Static(tex) => tex.size()[0] * tex.size()[1] * 4,
-                CachedImage::Animated { frames, .. } => frames.iter().map(|(t, _)| t.size()[0] * t.size()[1] * 4).sum(),
-            };
-            (key.clone(), size)
-        }).collect()
-    }
-
     pub fn is_spread(&self, index: usize) -> bool {
         self.get_first_tex(index).map(|t| t.size_vec2().x > t.size_vec2().y).unwrap_or(false)
     }
@@ -420,6 +423,7 @@ impl Manager {
         let path = utils::clean_path(&path);
         self.clear_cache();
         self.is_listing = true;
+        self.pending_go_last = self.open_from_end;
 
         let (base_path, start_name) = if path.is_file() && utils::is_image_ext(&path.to_string_lossy()) {
             let parent = path.parent()
@@ -451,26 +455,27 @@ impl Manager {
         }
     }
 
-    pub fn move_to_dir(&mut self, path: PathBuf, focus_hint: Option<PathBuf>, go_last: bool, config: &Config, manga: bool, shift: bool) { // config, manga, shift は viewer からの引数
-        let path = crate::utils::clean_path(&path); // utils へ移動
+    pub fn move_to_dir(&mut self, path: PathBuf, focus_hint: Option<PathBuf>, go_last: bool, _config: &Config, _manga: bool, _shift: bool) {
+        let path = crate::utils::clean_path(&path);
         self.clear_cache();
-        if let Ok(entries) = self.archive_reader.list_images(&path) { // ArchiveReader 経由
-            self.entries_meta = entries;
-            self.entries = self.entries_meta.iter().map(|e| e.name.clone()).collect();
-            if !self.entries.is_empty() { self.apply_sorting(config); }
-            if !self.entries.is_empty() {
-                self.current = if go_last {
-                    let last = self.entries.len().saturating_sub(1);
-                    if manga && last > 0 { if (last % 2 == 0) == shift { last } else { last.saturating_sub(1) } } else { last }
-                } else if let Some(hint) = focus_hint {
-                    let name = hint.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-                    self.entries.iter().position(|n| n.contains(&name)).unwrap_or(0)
-                } else { 0 };
-            } else { self.current = 0; }
-            self.target_index = self.current;
-            self.archive_path = Some(path);
-            self.schedule_prefetch(config.filter_mode, manga, image::MAX_TEX_DIM);
-        }
+        self.is_listing = true;
+        self.pending_go_last = go_last;
+        self.pending_focus = focus_hint
+            .and_then(|h| h.file_name().map(|f| f.to_string_lossy().to_string()));
+
+        let (tx, rx) = mpsc::channel();
+        self.list_rx = Some(rx);
+        let bp_clone = path.clone();
+        let reader = Arc::clone(&self.archive_reader);
+
+        std::thread::spawn(move || {
+            let res = reader.list_images(&bp_clone)
+                .map(|entries| (bp_clone, entries))
+                .map_err(|e| e.user_message());
+            let _ = tx.send(res);
+        });
+
+        self.archive_path = Some(path);
     }
 
     pub fn go_next(&mut self, manga: bool, shift: bool, filter: FilterMode, max_dim: u32) -> bool {
@@ -544,7 +549,7 @@ impl Manager {
         let mut req = |idx: usize| {
             if idx >= len { return; }
             let entry = &self.entries_meta[idx];
-            let key = entry.name.clone();
+            let key = format!("{}:{}", idx, entry.name);
             if self.cache.contains_key(&key) || self.pending.contains(&key) { return; }
             let rot = self.rotations.get(&entry.name).copied().unwrap_or(Rotation::R0); // Rotation は Manager 内で定義
             let kind = utils::detect_kind(path);
@@ -563,10 +568,9 @@ impl Manager {
         // 2. 次点：周辺ページ
         for i in lo..hi { req(i); }
         
-        // 過激な retain はインデックス更新時に表示中の画像を消してしまうため削除。
-        // キャッシュ制限は update() 内の LRU 管理に任せる。
-        
-        // cache から消されたキーを LRU リストからも削除する（ここが漏れていた）
+        // 3. 0.1.0 互換の積極的なキャッシュクリーンアップ
+        self.cache.retain(|k, _| k.split(':').next().and_then(|s| s.parse::<usize>().ok()).map(|i| i >= lo && i < hi).unwrap_or(false));
+        self.pending.retain(|k| k.split(':').next().and_then(|s| s.parse::<usize>().ok()).map(|i| i >= lo && i < hi).unwrap_or(false));
         self.cache_lru.retain(|k| self.cache.contains_key(k));
     }
 
@@ -593,6 +597,7 @@ fn downscale_if_needed(img: ::image::RgbaImage, max_dim: u32, filter: FilterMode
     if w <= max_dim && h <= max_dim { return img; }
     let scale = (max_dim as f32 / w as f32).min(max_dim as f32 / h as f32);
     let (nw, nh) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
+    
     let filter_type = match filter {
         FilterMode::Nearest => ::image::imageops::FilterType::Nearest,
         FilterMode::Bilinear => ::image::imageops::FilterType::Triangle,

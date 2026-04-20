@@ -4,7 +4,7 @@ mod sidebar;
 mod toolbar;
 
 pub use dialogs::{about_window, debug_window, key_config_window, settings_window, sort_settings_window, limiter_settings_window};
-pub use menu::{main_menu_bar, context_menu};
+pub use menu::main_menu_bar;
 pub use sidebar::sidebar_ui;
 pub use toolbar::bottom_toolbar;
 
@@ -12,6 +12,7 @@ use crate::config;
 use crate::types::DisplayMode;
 
 /// ユーザーがUI操作を通じて要求したアクション
+#[allow(dead_code)]
 pub enum ViewerAction {
     OpenRecent(String),
     OpenFolder,
@@ -23,6 +24,7 @@ pub enum ViewerAction {
     SetDisplayMode(DisplayMode),
     ZoomIn,
     ZoomOut,
+    ZoomReset,
     ToggleManga,
     ToggleMangaRtl,
     ToggleTree,
@@ -47,8 +49,9 @@ pub enum ViewerAction {
     ResizeWindow(u32, u32),
     About,
     SetMouseAction(u8, String),
-    ShowMenu,
     ToggleLimiterMode,
+    SetPdfRenderSize(u32),
+    TogglePdfWarning,
     OpenLimiterSettings,
     SetLimiterPageDuration(f32),
     SetLimiterFolderDuration(f32),
@@ -74,6 +77,7 @@ pub(crate) fn get_action_label(id: &str) -> &str {
         "ToggleFit"        => "画像フィットモードの切替",
         "ZoomIn"           => "拡大",
         "ZoomOut"          => "縮小",
+        "ZoomReset"        => "ズームをリセット",
         "ToggleManga"      => "マンガモード(見開き)の切替",
         "RotateCW"         => "画像を右に回転",
         "RotateCCW"        => "画像を左に回転",
@@ -93,7 +97,6 @@ pub(crate) fn get_action_label(id: &str) -> &str {
         "Quit"             => "アプリを終了",
         "ToggleBg"         => "背景色の切替",
         "ToggleDebug"      => "デバッグ情報の表示切替",
-        "ShowMenu"         => "メニューを表示",
         "None"             => "（なし）",
         _                  => id,
     }

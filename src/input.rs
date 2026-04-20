@@ -18,6 +18,7 @@ pub struct KeyboardState {
     pub toggle_fit: bool,
     pub zoom_in: bool,
     pub zoom_out: bool,
+    pub zoom_reset: bool,
     pub toggle_manga: bool,
     pub rcw: bool,
     pub rccw: bool,
@@ -39,7 +40,6 @@ pub struct KeyboardState {
     pub toggle_bg: bool,
     pub toggle_debug: bool,
     pub toggle_limiter: bool,
-    pub show_menu: bool,
 }
 
 pub fn gather_input(ctx: &egui::Context, config: &Config) -> KeyboardState {
@@ -67,6 +67,7 @@ pub fn gather_input(ctx: &egui::Context, config: &Config) -> KeyboardState {
             toggle_fit: check("ToggleFit"),
             zoom_in: check("ZoomIn"),
             zoom_out: check("ZoomOut"),
+            zoom_reset: check("ZoomReset"),
             toggle_manga: check("ToggleManga"),
             rcw: check("RotateCW"),
             rccw: check("RotateCCW"),
@@ -88,7 +89,6 @@ pub fn gather_input(ctx: &egui::Context, config: &Config) -> KeyboardState {
             toggle_bg: check("ToggleBg"),
             toggle_debug: check("ToggleDebug"),
             toggle_limiter: check("ToggleLimiter"),
-            show_menu: check("ShowMenu"),
         }
     })
 }

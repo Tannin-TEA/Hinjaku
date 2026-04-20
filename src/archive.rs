@@ -2,14 +2,14 @@ use crate::error::{HinjakuError, Result};
 use std::io::Read;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use pdfium_render::prelude::*;
+use crate::pdf_handler;
 
 use crate::utils; // utils モジュールをインポート
 
 // ArchiveReader トレイトの定義
 pub trait ArchiveReader: Send + Sync {
     fn list_images(&self, path: &Path) -> Result<Vec<ImageEntry>>;
-    fn read_entry(&self, archive_path: &Path, entry_name: &str, entry_index: Option<usize>) -> Result<Vec<u8>>;
+    fn read_entry(&self, archive_path: &Path, entry_name: &str, entry_index: Option<usize>, max_dim: u32) -> Result<Vec<u8>>;
     fn list_nav_targets(&self, path: &Path) -> Result<Vec<PathBuf>>;
     fn get_roots(&self) -> Vec<PathBuf>;
 }
@@ -30,16 +30,16 @@ impl ArchiveReader for DefaultArchiveReader {
         match utils::detect_kind(path) {
             utils::ArchiveKind::Zip => self.list_zip(path),
             utils::ArchiveKind::SevenZ => self.list_7z(path),
-            utils::ArchiveKind::Pdf => self.list_pdf(path),
+            utils::ArchiveKind::Pdf => pdf_handler::list_pdf(path),
             utils::ArchiveKind::Plain => self.list_plain(path),
         }
     }
 
-    fn read_entry(&self, archive_path: &Path, entry_name: &str, entry_index: Option<usize>) -> Result<Vec<u8>> {
+    fn read_entry(&self, archive_path: &Path, entry_name: &str, entry_index: Option<usize>, max_dim: u32) -> Result<Vec<u8>> {
         match utils::detect_kind(archive_path) {
-            utils::ArchiveKind::Zip => self.read_zip(archive_path, entry_name, entry_index),
+            utils::ArchiveKind::Zip => self.read_zip(archive_path, entry_name, entry_index), // Zip/7z はリサイズを後段で行う
             utils::ArchiveKind::SevenZ => self.read_7z(archive_path, entry_name),
-            utils::ArchiveKind::Pdf => self.read_pdf(archive_path, entry_index),
+            utils::ArchiveKind::Pdf => pdf_handler::read_pdf(archive_path, entry_index, max_dim),
             utils::ArchiveKind::Plain => {
                 let target = if archive_path.is_file() { archive_path.to_path_buf() } else { archive_path.join(entry_name) };
                 Ok(std::fs::read(target)?)
@@ -100,31 +100,10 @@ impl ArchiveReader for DefaultArchiveReader {
 
 // DefaultArchiveReader のプライベートヘルパー関数
 impl DefaultArchiveReader {
-    fn init_pdfium(&self) -> Result<Pdfium> {
-        // スレッドごとにバインディングを保持するのは難しいため、
-        // DLLの探索パスの解決を効率化します。
-        let library_path = if let Ok(exe_p) = std::env::current_exe() {
-            exe_p.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("./"))
-        } else {
-            PathBuf::from("./")
-        };
-
-        let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(library_path.to_str().unwrap_or("./")))
-            .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")))
-            .map_err(|_| HinjakuError::Archive(
-                "pdfium.dll が見つからないか、読み込めません。\n\
-                 以下のDL先から入手し、hinjaku.exe と同じフォルダに置いてください。\n\
-                 DL先: https://github.com/bblanchon/pdfium-binaries\n\
-                 公式 (本家/ライセンス): https://pdfium.googlesource.com/pdfium/".to_string()
-            ))?;
-
-        Ok(Pdfium::new(bindings))
-    }
-
     fn list_zip(&self, path: &Path) -> Result<Vec<ImageEntry>> {
+        // ここも同様に BufReader を除去してシークのオーバーヘッドを減らす
         let file = std::fs::File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut zip = zip::ZipArchive::new(reader)?;
+        let mut zip = zip::ZipArchive::new(file)?;
 
         // 1. file_names() を使って画像ファイルだけのインデックスを先に抽出する。
         // 中央ディレクトリの文字列参照だけで判定するため、画像以外のファイルに対して
@@ -160,6 +139,9 @@ impl DefaultArchiveReader {
         Ok(entries)
     }
 
+    // TODO: 高速化のためには、manager.rs 側のワーカースレッド内で 
+    // 「現在開いている ZipArchive」を保持するようにリファクタリングすることを推奨します。
+    // 現状、ページをめくるたびに以下の read_zip が走り、Zip の再パースが発生しています。
     fn read_zip(&self, path: &Path, entry_name: &str, entry_index: Option<usize>) -> Result<Vec<u8>> {
         let file = std::fs::File::open(path)?;
         let reader = BufReader::new(file);
@@ -214,59 +196,6 @@ impl DefaultArchiveReader {
         .map_err(|e| HinjakuError::Archive(format!("7z read error: {e}")))?;
         result.ok_or_else(|| HinjakuError::NotFound(format!("Entry not found: {entry_name}")))
     }
-
-// ── PDF ─────────────────────────────────────────────────────────────────────
-
-    fn list_pdf(&self, path: &Path) -> Result<Vec<ImageEntry>> {
-        let pdfium = self.init_pdfium()?;
-        let document = pdfium.load_pdf_from_file(path, None)
-            .map_err(|e| HinjakuError::Archive(format!("PDF load error: {e}")))?;
-        
-        let mtime = std::fs::metadata(path)?.modified()
-            .unwrap_or(std::time::UNIX_EPOCH)
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-
-        let mut entries = Vec::new();
-        for i in 0..document.pages().len() {
-            entries.push(ImageEntry {
-                name: format!("Page {:04}.pdf", i + 1),
-                mtime,
-                size: 0,
-                archive_index: i as usize,
-            });
-        }
-        Ok(entries)
-    }
-
-    fn read_pdf(&self, path: &Path, page_index: Option<usize>) -> Result<Vec<u8>> {
-        let pdfium = self.init_pdfium()?;
-        
-        let document = pdfium.load_pdf_from_file(path, None)
-            .map_err(|e| HinjakuError::Archive(format!("PDF load error: {e}")))?;
-        
-        let index = page_index.unwrap_or(0) as u16;
-        let page = document.pages().get(index)
-            .map_err(|_| HinjakuError::NotFound(format!("Page {} not found", index)))?;
-
-        // 長辺を 1920px (MAX_TEX_DIM) に合わせてレンダリング
-        let width = page.width().value;
-        let height = page.height().value;
-        let scale = 1920.0 / width.max(height);
-        let render_w = (width * scale) as i32;
-        let render_h = (height * scale) as i32;
-
-        let bitmap = page.render(render_w, render_h, None)
-            .map_err(|e| HinjakuError::Archive(format!("PDF render error: {e}")))?;
-        
-        // BMP 形式で書き出す。PNG よりもエンコードが圧倒的に速い。
-        let mut bmp_data = Vec::new();
-        bitmap.as_image() // pdfium-render が内部で適切にピクセル変換を行う
-            .write_to(&mut std::io::Cursor::new(&mut bmp_data), ::image::ImageFormat::Bmp)
-            .map_err(|e| HinjakuError::Archive(format!("BMP conversion error: {e}")))?;
-
-        Ok(bmp_data)
-    }
-
 // ── Plain folder / single file ──────────────────────────────────────────────
 
     fn list_plain(&self, path: &Path) -> Result<Vec<ImageEntry>> {

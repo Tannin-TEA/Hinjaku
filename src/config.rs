@@ -98,8 +98,6 @@ pub struct Config {
     pub mouse5_action: String,
     /// マウス中ボタン（ホイールクリック）のアクション
     pub mouse_middle_action: String,
-    /// マウス右ダブルクリックのアクション
-    pub mouse_right_double_action: String,
     /// リミッターモード（ページ送り制限を有効にするか）
     pub limiter_mode: bool,
     /// ページ送りリミッターの待機時間 (秒)
@@ -112,6 +110,8 @@ pub struct Config {
     pub limiter_stop_at_end: bool,
     /// PDF警告を表示するか
     pub show_pdf_warning: bool,
+    /// PDFのレンダリングサイズ（長辺）
+    pub pdf_render_size: u32,
 }
 
 impl Default for Config {
@@ -156,13 +156,13 @@ impl Default for Config {
             mouse4_action: "PrevPage".to_string(),
             mouse5_action: "NextPage".to_string(),
             mouse_middle_action: "ToggleFit".to_string(),
-            mouse_right_double_action: "ShowMenu".to_string(),
             limiter_mode: false,
             limiter_page_duration: 0.05,
             limiter_folder_duration: 0.2,
             limiter_stop_at_start: true,
             limiter_stop_at_end: false,
             show_pdf_warning: true,
+            pdf_render_size: 1920,
             keys: [
                 ("PrevPage", "ArrowLeft, P"),
                 ("NextPage", "ArrowRight, N"),
@@ -180,6 +180,7 @@ impl Default for Config {
                 ("ToggleFit", "F"),
                 ("ZoomIn", "Plus, Equals"),
                 ("ZoomOut", "Minus"),
+                ("ZoomReset", "Z"),
                 ("ToggleManga", "M, Space"),
                 ("RotateCW", "R"),
                 ("OpenKeyConfig", "K"),
@@ -201,7 +202,6 @@ impl Default for Config {
                 ("ToggleBg", "B"),
                 ("ToggleDebug", "F12"),
                 ("ToggleLimiter", "L"),
-                ("ShowMenu", ""),
             ].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         }
     }
@@ -271,7 +271,6 @@ pub fn load_config_file(custom_name: Option<&str>) -> (Config, Option<PathBuf>) 
             if let Some(v) = sec.get("Mouse4Action") { cfg.mouse4_action = v.to_string(); }
             if let Some(v) = sec.get("Mouse5Action") { cfg.mouse5_action = v.to_string(); }
             if let Some(v) = sec.get("MouseMiddleAction") { cfg.mouse_middle_action = v.to_string(); }
-            if let Some(v) = sec.get("MouseRightDoubleAction") { cfg.mouse_right_double_action = v.to_string(); }
 
             // 互換性のため Preview/Reading キーもチェック
             if let Some(v) = sec.get("LimiterMode").or(sec.get("ReadingMode")).or(sec.get("PreviewMode")) {
@@ -361,13 +360,13 @@ pub fn save_config_file(cfg: &Config, path: &std::path::Path) -> Result<()> {
         .set("Mouse4Action", &cfg.mouse4_action)
         .set("Mouse5Action", &cfg.mouse5_action)
         .set("MouseMiddleAction", &cfg.mouse_middle_action)
-        .set("MouseRightDoubleAction", &cfg.mouse_right_double_action)
         .set("LimiterMode", cfg.limiter_mode.to_string())
         .set("LimiterPageDuration", cfg.limiter_page_duration.to_string())
         .set("LimiterFolderDuration", cfg.limiter_folder_duration.to_string())
         .set("LimiterStopAtStart", cfg.limiter_stop_at_start.to_string())
         .set("LimiterStopAtEnd", cfg.limiter_stop_at_end.to_string())
         .set("ShowPdfWarning", cfg.show_pdf_warning.to_string())
+        .set("PdfRenderSize", cfg.pdf_render_size.to_string())
         .set("OpenFromEnd", cfg.open_from_end.to_string());
     
     for (i, app) in cfg.external_apps.iter().enumerate() {

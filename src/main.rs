@@ -14,6 +14,7 @@ mod painter;
 mod window;
 mod shell;
 mod startup;
+mod pdf_handler;
 mod widgets;
 mod input;
 mod toast; 

@@ -321,26 +321,24 @@ pub fn key_config_window(
                 egui::Grid::new("mouse_buttons_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     let mouse_actions = [
                         "None", "PrevPage", "NextPage", "PrevPageSingle", "NextPageSingle",
-                        "PrevDir", "NextDir", "ToggleFit", "ToggleManga", "ShowMenu",
+                        "PrevDir", "NextDir", "ToggleFit", "ToggleManga",
                     ];
-                    for i in 0..4usize {
+                    for i in 0..3usize {
                         let (label, current) = match i {
                             0 => ("戻るボタン (Mouse4):",   config.mouse4_action.clone()),
                             1 => ("中ボタン (WheelClick):", config.mouse_middle_action.clone()),
-                            2 => ("進むボタン (Mouse5):",   config.mouse5_action.clone()),
-                            _ => ("右ダブルクリック:",      config.mouse_right_double_action.clone()),
+                            _ => ("進むボタン (Mouse5):",   config.mouse5_action.clone()),
                         };
                         ui.label(label);
                         egui::ComboBox::from_id_source(label)
                             .selected_text(get_action_label(&current))
                             .show_ui(ui, |ui| {
                                 for act in mouse_actions {
-                                    if ui.selectable_label(current == act, get_action_label(act)).clicked() {
+                                    if ui.selectable_label(current == *act, get_action_label(act)).clicked() {
                                         match i {
                                             0 => config.mouse4_action = act.to_string(),
                                             1 => config.mouse_middle_action = act.to_string(),
-                                            2 => config.mouse5_action = act.to_string(),
-                                            _ => config.mouse_right_double_action = act.to_string(),
+                                            _ => config.mouse5_action = act.to_string(),
                                         }
                                         changed = true;
                                     }
@@ -480,6 +478,11 @@ pub fn limiter_settings_window(
                 ui.add_space(4.0);
                 ui.label("フォルダ/アーカイブ移動待機時間（秒）");
                 changed |= ui.add(egui::Slider::new(&mut config.limiter_folder_duration, 0.0..=2.0).step_by(0.01)).changed();
+            });
+            ui.group(|ui| {
+                ui.label("PDF レンダリング品質（長辺の解像度）");
+                changed |= ui.add(egui::Slider::new(&mut config.pdf_render_size, 480..=3840).step_by(10.0).logarithmic(true)).changed();
+                ui.label(RichText::new("値を下げるとPDFの表示が劇的に軽くなります。").small());
             });
             ui.add_space(12.0);
             if ui.button("閉じる").clicked() { close_clicked = true; }

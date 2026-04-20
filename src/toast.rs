@@ -5,6 +5,7 @@ use crate::constants::ui::TOAST_DURATION;
 
 /// トースト通知の種類
 #[derive(Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum ToastKind {
     Info,
     Warning,
@@ -68,11 +69,13 @@ impl ToastManager {
     }
 
     /// 警告トーストを追加
+    #[allow(dead_code)]
     pub fn warn(&mut self, message: impl Into<String>, ctx: &egui::Context) {
         self.add_kind(message, ToastKind::Warning, ctx);
     }
 
     /// エラートーストを追加
+    #[allow(dead_code)]
     pub fn error(&mut self, message: impl Into<String>, ctx: &egui::Context) {
         self.add_kind(message, ToastKind::Error, ctx);
     }

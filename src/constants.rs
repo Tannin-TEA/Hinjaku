@@ -33,6 +33,12 @@ pub mod ui {
 }
 
 /// 読み込み関連の定数
+///
+/// ⚠️ CPU負荷に直結する定数群。変更前にユーザーへ確認すること。
+/// - WORKER_THREADS と MAX_TEXTURE_UPLOADS_PER_FRAME を増やすと
+///   ロード中のCPU使用率が大幅に上昇する。
+/// - 過去に 4 / 5 へ増やされてCPU負荷が問題になった経緯がある (0.1.2)。
+/// - 変更するなら必ず理由と影響を提示してから行うこと。
 pub mod loading {
     /// アニメーションを試みる最大ファイルサイズ (30MB)
     pub const MAX_ANIM_DECODE_SIZE: usize = 30 * 1024 * 1024;
@@ -40,15 +46,14 @@ pub mod loading {
     pub const MIN_ANIM_FRAME_DELAY_MS: u32 = 20;
     /// アニメーションのデフォルト遅延
     pub const DEFAULT_ANIM_FRAME_DELAY_MS: u32 = 100;
-    /// 1メインループあたりにGPUへ転送する最大テクスチャ数
-    pub const MAX_TEXTURE_UPLOADS_PER_FRAME: usize = 5;
+    /// 1フレームあたりのGPUテクスチャ転送上限。増やすとフレームごとのCPU/GPU負荷が上がる。
+    /// ⚠️ 変更前にユーザーへ確認すること。基準値 = 2
+    pub const MAX_TEXTURE_UPLOADS_PER_FRAME: usize = 2;
     /// 現在位置からこれ以上離れたリクエストは破棄する距離
     pub const LOAD_SKIP_DISTANCE_THRESHOLD: isize = 12;
-    /// 画像デコード用ワーカースレッド数
-    pub const WORKER_THREADS: usize = 4;
-    /// 2枚目テクスチャ待機のフォールバックポーリング間隔 (ミリ秒)
-    /// 通常はworkerのrequest_repaintで再描画される。これは取りこぼし対策
-    pub const LOADING_FALLBACK_POLL_MS: u64 = 100;
+    /// 画像デコード用ワーカースレッド数。増やすとロード中のCPU消費が増える。
+    /// ⚠️ 変更前にユーザーへ確認すること。基準値 = 2
+    pub const WORKER_THREADS: usize = 2;
 }
 
 /// 描画関連の定数

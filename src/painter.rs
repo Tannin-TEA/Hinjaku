@@ -69,6 +69,11 @@ pub fn draw_centered(
 }
 
 /// メイン画像表示エリアの描画（マンガモード対応）
+///
+/// ⚠️ ここは描写の核心部。以下を変更する前にユーザーへ確認すること：
+/// - ScrollArea の種類・設定（repaint の頻度に影響する）
+/// - Sense の種類（drag / click / hover）の変更
+/// - 画像配置の計算ロジック（マンガモードのページ並び順を含む）
 pub fn draw_main_area(
     ui: &mut egui::Ui,
     manager: &Manager,

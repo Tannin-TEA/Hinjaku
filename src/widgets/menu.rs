@@ -16,34 +16,36 @@ pub fn main_menu_bar(
     let mut action = None;
     TopBottomPanel::top("top_panel").show(ctx, |ui| {
         menu::bar(ui, |ui| {
-            if let Some(act) = ui.menu_button("ファイル", |ui| { ui.set_min_width(180.0); file_menu(ui, config, manager) }).inner.flatten() { action = Some(act); }
-            if let Some(act) = ui.menu_button("表示", |ui| { ui.set_min_width(180.0); view_menu(ui, config, manager, view, show_tree) }).inner.flatten() { action = Some(act); }
-            if let Some(act) = ui.menu_button("フォルダ", |ui| { ui.set_min_width(180.0); folder_menu(ui, config) }).inner.flatten() { action = Some(act); }
-            if let Some(act) = ui.menu_button("オプション", |ui| { ui.set_min_width(180.0); option_menu(ui, config, show_debug) }).inner.flatten() { action = Some(act); }
+            if let Some(act) = ui.menu_button("ファイル", |ui| { ui.set_min_width(220.0); file_menu(ui, config, manager) }).inner.flatten() { action = Some(act); }
+            if let Some(act) = ui.menu_button("表示", |ui| { ui.set_min_width(220.0); view_menu(ui, config, manager, view, show_tree) }).inner.flatten() { action = Some(act); }
+            if let Some(act) = ui.menu_button("フォルダ", |ui| { ui.set_min_width(220.0); folder_menu(ui, config) }).inner.flatten() { action = Some(act); }
+            if let Some(act) = ui.menu_button("オプション", |ui| { ui.set_min_width(220.0); option_menu(ui, config, show_debug) }).inner.flatten() { action = Some(act); }
         });
     });
     action
 }
 
 fn file_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager) -> Option<ViewerAction> {
+    ui.style_mut().wrap = Some(false);
     let mut action = None;
     if ui.button("フォルダを開く").clicked() {
         ui.close_menu(); action = Some(ViewerAction::OpenFolder);
     }
     ui.menu_button("最近開いたファイル", |ui| {
-        ui.set_min_width(300.0);
+        ui.set_min_width(450.0);
+        ui.style_mut().wrap = Some(false);
         if config.recent_paths.is_empty() {
             ui.label(RichText::new("（履歴なし）").weak());
         } else {
             for path_str in &config.recent_paths {
                 let path = std::path::Path::new(path_str);
                 let name = utils::get_display_name(path);
-                let max_len = 40;
+                let max_len = 50;
                 let display_text = if name.chars().count() <= max_len { name } else {
-                    let kind = utils::detect_kind(path);
-                    if matches!(kind, utils::ArchiveKind::Zip | utils::ArchiveKind::SevenZ | utils::ArchiveKind::Pdf) {
-                        let chars: Vec<char> = name.chars().collect();
-                        format!("...{}", chars[chars.len() - (max_len - 3)..].iter().collect::<String>())
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        let take_n = max_len.saturating_sub(ext.chars().count() + 4).max(1);
+                        format!("{}...{}", stem.chars().take(take_n).collect::<String>(), ext)
                     } else {
                         format!("{}...", name.chars().take(max_len - 3).collect::<String>())
                     }
@@ -59,7 +61,7 @@ fn file_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager) -> O
         ui.close_menu(); action = Some(ViewerAction::RevealInExplorer);
     }
     ui.menu_button("送る", |ui| {
-        ui.set_min_width(160.0);
+        ui.set_min_width(220.0);
         for (i, app) in config.external_apps.iter().enumerate() {
             if ui.add_enabled(manager.archive_path.is_some() && !app.exe.is_empty(), Button::new(&app.name)).clicked() {
                 ui.close_menu(); action = Some(ViewerAction::OpenExternal(i));
@@ -75,7 +77,8 @@ fn file_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager) -> O
     action
 }
 
-fn view_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager, view: &ViewState, show_tree: bool) -> Option<ViewerAction> {
+fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, view: &ViewState, show_tree: bool) -> Option<ViewerAction> {
+    ui.style_mut().wrap = Some(false);
     let mut action = None;
     if ui.selectable_label(view.display_mode == crate::types::DisplayMode::Fit, "フィット表示 (F)").clicked() {
         ui.close_menu(); action = Some(ViewerAction::SetDisplayMode(crate::types::DisplayMode::Fit));
@@ -89,6 +92,7 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager, view
     ui.separator();
     if ui.button("拡大 (+)").clicked() { action = Some(ViewerAction::ZoomIn); }
     if ui.button("縮小 (-)").clicked() { action = Some(ViewerAction::ZoomOut); }
+    if ui.button("ズームをリセット (Z)").clicked() { ui.close_menu(); action = Some(ViewerAction::ZoomReset); }
     ui.separator();
     if ui.selectable_label(view.manga_mode, "マンガモード (M)").clicked() {
         ui.close_menu(); action = Some(ViewerAction::ToggleManga);
@@ -115,6 +119,17 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager, view
             }
         }
     });
+    ui.menu_button("PDF品質", |ui| {
+        for s in [720, 1080, 1440, 1920, 2880] {
+            if ui.selectable_label(config.pdf_render_size == s, format!("{}px", s)).clicked() {
+                ui.close_menu(); action = Some(ViewerAction::SetPdfRenderSize(s));
+            }
+        }
+    });
+    if ui.selectable_label(config.show_pdf_warning, "PDF警告を表示").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::TogglePdfWarning);
+    }
+
     ui.menu_button("ウィンドウサイズ", |ui| {
         for (w, h, label) in [(640, 480, "VGA"), (800, 600, "SVGA"), (1024, 768, "XGA"), (1280, 960, "Quad-VGA"), (1400, 1050, "SXGA+"), (1600, 1200, "UXGA")] {
             if ui.button(label).clicked() { ui.close_menu(); action = Some(ViewerAction::ResizeWindow(w, h)); }
@@ -140,6 +155,7 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager, view
 }
 
 fn folder_menu(ui: &mut egui::Ui, config: &config::Config) -> Option<ViewerAction> {
+    ui.style_mut().wrap = Some(false);
     let mut action = None;
     if ui.button("前のフォルダ (PgUp)").clicked() { ui.close_menu(); action = Some(ViewerAction::GoPrevDir); }
     if ui.button("次のフォルダ (PgDn)").clicked() { ui.close_menu(); action = Some(ViewerAction::GoNextDir); }
@@ -151,6 +167,7 @@ fn folder_menu(ui: &mut egui::Ui, config: &config::Config) -> Option<ViewerActio
 }
 
 fn option_menu(ui: &mut egui::Ui, config: &config::Config, show_debug: bool) -> Option<ViewerAction> {
+    ui.style_mut().wrap = Some(false);
     let mut action = None;
     if ui.selectable_label(config.allow_multiple_instances, "複数起動を許可").clicked() { ui.close_menu(); action = Some(ViewerAction::ToggleMultipleInstances); }
     if ui.button("ウィンドウを中央に移動").clicked() { ui.close_menu(); action = Some(ViewerAction::MoveToCenter); }
@@ -164,38 +181,5 @@ fn option_menu(ui: &mut egui::Ui, config: &config::Config, show_debug: bool) -> 
     if ui.selectable_label(config.renderer == config::RendererMode::Wgpu, "WGPU (互換性)").clicked() { ui.close_menu(); action = Some(ViewerAction::SetRenderer(config::RendererMode::Wgpu)); }
     ui.separator();
     if ui.button("このソフトについて...").clicked() { ui.close_menu(); action = Some(ViewerAction::About); }
-    action
-}
-
-/// 右クリックやショートカットで表示されるコンテキストメニュー
-pub fn context_menu(
-    ui: &mut egui::Ui,
-    config: &config::Config,
-    manager: &Manager,
-    view: &ViewState,
-    show_tree: bool,
-    show_debug: bool,
-) -> Option<ViewerAction> {
-    let mut action = None;
-
-    // コンテキストメニューを極限までスリムにするためのスタイル調整
-    ui.set_max_width(160.0);
-    let style = ui.style_mut();
-    style.spacing.button_padding = egui::vec2(4.0, 2.0);
-    style.spacing.item_spacing = egui::vec2(0.0, 2.0);
-    
-    // 各サブメニュー自体の幅も 140 から 120 へさらに絞る
-    if let Some(act) = ui.menu_button("ファイル ▼", |ui| { ui.set_min_width(120.0); file_menu(ui, config, manager) }).inner.flatten() { action = action.or(Some(act)); }
-    if let Some(act) = ui.menu_button("表示 ▼", |ui| { ui.set_min_width(120.0); view_menu(ui, config, manager, view, show_tree) }).inner.flatten() { action = action.or(Some(act)); }
-    if let Some(act) = ui.menu_button("フォルダ ▼", |ui| { ui.set_min_width(120.0); folder_menu(ui, config) }).inner.flatten() { action = action.or(Some(act)); }
-    if let Some(act) = ui.menu_button("オプション ▼", |ui| { ui.set_min_width(120.0); option_menu(ui, config, show_debug) }).inner.flatten() { action = action.or(Some(act)); }
-
-    ui.separator();
-    if ui.button("前のページ").clicked() { ui.close_menu(); action = Some(ViewerAction::PrevPage); }
-    if ui.button("次のページ").clicked() { ui.close_menu(); action = Some(ViewerAction::NextPage); }
-
-    // NOTE: 重複を避けるため、各メニューボタンの内部処理を共通化するのが理想ですが、
-    // 現在は main_menu_bar の内容をインラインまたは同様に記述することを想定しています。
-    
     action
 }

@@ -182,11 +182,16 @@ pub fn natord(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 fn consume_num(iter: &mut std::iter::Peekable<std::str::Chars>) -> u64 {
-    let mut s = String::new();
-    while iter.peek().map(|c| c.is_ascii_digit()).unwrap_or(false) {
-        if let Some(c) = iter.next() { s.push(c); }
+    let mut n: u64 = 0;
+    while let Some(&c) = iter.peek() {
+        if let Some(digit) = c.to_digit(10) {
+            n = n.saturating_mul(10).saturating_add(digit as u64);
+            iter.next();
+        } else {
+            break;
+        }
     }
-    s.parse().unwrap_or(0)
+    n
 }
 
 fn basename(s: &str) -> &str {

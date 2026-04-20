@@ -40,7 +40,12 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [profile.release]
-opt-level = "z"
+# ⚠️ opt-level は必ず 3 のままにすること。
+# "z"（サイズ優先）に変更すると速度最適化が無効になり、
+# 画像デコード・リサイズ処理が遅くなってCPU負荷が急増する。
+# 過去に "z" へ変更されてCPU負荷問題が発生した経緯がある (0.1.2)。
+# 変更するなら必ずユーザーへ確認を取ること。
+opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true

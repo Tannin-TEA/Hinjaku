@@ -1,26 +1,6 @@
 use eframe::egui;
 use crate::config::Config;
 
-/// プライマリモニターのワークエリア（タスクバーを除いた領域）を取得する
-/// 戻り値: (x, y, width, height)
-pub fn get_primary_work_area() -> (f32, f32, f32, f32) {
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
-        use windows_sys::Win32::Foundation::RECT;
-        let mut rect: RECT = std::mem::zeroed();
-        if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut _ as _, 0) != 0 {
-            return (
-                rect.left as f32,
-                rect.top as f32,
-                (rect.right - rect.left) as f32,
-                (rect.bottom - rect.top) as f32,
-            );
-        }
-    }
-    (0.0, 0.0, 1920.0, 1080.0)
-}
-
 /// ウィンドウをワークエリア（タスクバー除外）の中央に配置する
 /// Windows上は純粋なWindows APIで完結させ、座標系の不一致を回避する
 pub fn move_to_center(_ctx: &egui::Context, _inner_width: f32, _inner_height: f32) {

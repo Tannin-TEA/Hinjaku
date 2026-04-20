@@ -15,8 +15,6 @@ struct UiState {
     show_about:         bool,
     show_limiter_settings: bool,
     pdf_warning_open:   bool,
-    show_popup_menu:    bool,
-    popup_menu_pos:     egui::Pos2,
     capturing_key_for:  Option<String>,
     sort_focus_idx:     usize,
     settings_args_tmp:  Vec<String>,
@@ -33,8 +31,6 @@ impl UiState {
             show_about:         false,
             show_limiter_settings: false,
             pdf_warning_open:   false,
-            show_popup_menu:    false,
-            popup_menu_pos:     egui::Pos2::ZERO,
             capturing_key_for:  None,
             sort_focus_idx:     0,
             settings_args_tmp:  config.external_apps.iter().map(|a| a.args.join(" ")).collect(),
@@ -58,7 +54,6 @@ pub struct App {
     last_debug_log_time:  f64,
     last_resize_time:     f64,
     debug_cli:            bool,
-    last_target_index:    usize,
     last_archive_path:    Option<PathBuf>,
     error:                Option<String>,
     toasts:               toast::ToastManager,
@@ -119,7 +114,6 @@ impl App {
             last_debug_log_time:    0.0,
             last_resize_time:       0.0,
             debug_cli,
-            last_target_index:      0,
             last_archive_path:      None,
             error:                  None,
             toasts:                 toast::ToastManager::new(),
@@ -181,7 +175,7 @@ impl App {
                 self.manager.invalidate_cache_for(idx, &name);
             }
         }
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, image::MAX_TEX_DIM);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
         ctx.request_repaint();
     }
 
@@ -189,7 +183,7 @@ impl App {
         self.error = None;
         self.manager.move_to_dir(path, focus_hint, go_last, &self.config, self.view.manga_mode, self.view.manga_shift);
         self.sync_tree_to_current();
-        self.is_loading_archive = !self.manager.entries.is_empty();
+        self.is_loading_archive = self.manager.is_listing;
         ctx.request_repaint();
     }
 
@@ -231,14 +225,18 @@ impl App {
         false
     }
 
+    /// ウィンドウタイトルを更新する。
+    ///
+    /// ⚠️ ガード条件（archive_path と last_title_update_time）を変更すると
+    /// 毎フレームタイトル更新が走る repaint ループが発生する可能性がある。
+    /// 過去に last_target_index を条件に加えたことでループが発生した経緯がある (0.1.2)。
+    /// 条件を追加・変更する前にユーザーへ確認すること。
     fn update_title(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        // アーカイブが変わった、表示画像が変わった、または2秒経過（メモリ更新用）のいずれかで更新
-        let current_idx = self.manager.current;
-        if self.manager.archive_path == self.last_archive_path && current_idx == self.last_target_index && now - self.last_title_update_time <= 2.0 { return; }
+        // アーカイブが変わった、または2秒経過（メモリ更新用）のいずれかで更新
+        if self.manager.archive_path == self.last_archive_path && now - self.last_title_update_time <= 2.0 { return; }
 
         self.last_archive_path = self.manager.archive_path.clone();
-        self.last_target_index = current_idx;
         self.last_title_update_time = now;
 
         let renderer_str = match self.config.renderer {
@@ -275,7 +273,7 @@ impl App {
     fn go_single_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_prev(false, false, self.config.filter_mode, image::MAX_TEX_DIM) {
+        if !self.manager.go_prev(false, false, self.config.filter_mode, self.config.pdf_render_size) {
             if self.config.limiter_mode && self.config.limiter_stop_at_start { return; }
             self.go_prev_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -284,7 +282,7 @@ impl App {
     fn go_single_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_next(false, false, self.config.filter_mode, image::MAX_TEX_DIM) {
+        if !self.manager.go_next(false, false, self.config.filter_mode, self.config.pdf_render_size) {
             if self.config.limiter_mode && self.config.limiter_stop_at_end { return; }
             self.go_next_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -293,7 +291,7 @@ impl App {
     fn go_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_prev(self.view.manga_mode, self.view.manga_shift, self.config.filter_mode, image::MAX_TEX_DIM) {
+        if !self.manager.go_prev(self.view.manga_mode, self.view.manga_shift, self.config.filter_mode, self.config.pdf_render_size) {
             if self.config.limiter_mode && self.config.limiter_stop_at_start { return; }
             self.go_prev_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -302,7 +300,7 @@ impl App {
     fn go_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_next(self.view.manga_mode, self.view.manga_shift, self.config.filter_mode, image::MAX_TEX_DIM) {
+        if !self.manager.go_next(self.view.manga_mode, self.view.manga_shift, self.config.filter_mode, self.config.pdf_render_size) {
             if self.config.limiter_mode && self.config.limiter_stop_at_end { return; }
             self.go_next_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -312,7 +310,7 @@ impl App {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
         self.manager.target_index = 0;
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, image::MAX_TEX_DIM);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
         ctx.request_repaint();
     }
 
@@ -323,7 +321,7 @@ impl App {
         self.manager.target_index = if self.view.manga_mode && last > 0 && last % 2 == 0 {
             last.saturating_sub(1)
         } else { last };
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, image::MAX_TEX_DIM);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
         ctx.request_repaint();
     }
 
@@ -332,7 +330,7 @@ impl App {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
         self.manager.target_index = idx;
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, image::MAX_TEX_DIM);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
         ctx.request_repaint();
     }
 
@@ -346,6 +344,10 @@ impl App {
         self.view.zoom = (self.view.zoom / ui::ZOOM_STEP).max(ui::MIN_ZOOM);
     }
 
+    fn zoom_reset(&mut self) {
+        self.view.zoom = 1.0;
+    }
+
     fn set_display_mode(&mut self, m: DisplayMode) {
         self.view.display_mode = m;
         if m == DisplayMode::Manual { self.view.zoom = 1.0; }
@@ -353,7 +355,7 @@ impl App {
 
     fn toggle_manga(&mut self, ctx: &egui::Context) {
         self.view.manga_mode = !self.view.manga_mode;
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, image::MAX_TEX_DIM);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
         ctx.request_repaint();
     }
 
@@ -366,7 +368,7 @@ impl App {
         };
         self.manager.clear_cache();
         self.save_config();
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, image::MAX_TEX_DIM);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
         ctx.request_repaint();
     }
 
@@ -453,6 +455,7 @@ impl App {
         if !is_typing && !is_capturing && self.ui.show_sort_settings && k.sort_settings {
             self.manager.apply_sorting(&self.config);
             self.manager.clear_cache();
+            self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
             self.save_config();
             self.ui.show_sort_settings = false;
         }
@@ -497,6 +500,7 @@ impl App {
         if k.next_dir         { self.go_next_dir(ctx); }
         if k.zoom_in          { self.zoom_in(); }
         if k.zoom_out         { self.zoom_out(); }
+        if k.zoom_reset       { self.zoom_reset(); }
         if k.rcw              { self.rotate_current(true, ctx); }
         if k.rccw             { self.rotate_current(false, ctx); }
         if k.toggle_manga     { self.toggle_manga(ctx); }
@@ -515,7 +519,6 @@ impl App {
         if k.bs {
             if let Err(e) = shell::reveal_current_in_explorer(&self.manager) { self.add_toast(e, ctx); }
         }
-        if k.show_menu { self.handle_action(ctx, widgets::ViewerAction::ShowMenu); }
         if k.toggle_fit {
             let next = match self.view.display_mode {
                 DisplayMode::Fit       => DisplayMode::WindowFit,
@@ -550,19 +553,13 @@ impl App {
     }
 
     fn handle_mouse_input(&mut self, ctx: &egui::Context) {
-        let (wheel, secondary, secondary_double) = ctx.input(|i| (
+        let (wheel, secondary_down) = ctx.input(|i| (
             i.smooth_scroll_delta.y, 
-            i.pointer.button_down(egui::PointerButton::Secondary),
-            i.pointer.button_double_clicked(egui::PointerButton::Secondary)
+            i.pointer.button_down(egui::PointerButton::Secondary)
         ));
 
-        if secondary_double {
-            let act = self.config.mouse_right_double_action.clone();
-            self.execute_mouse_action(&act, ctx);
-        }
-
         if wheel != 0.0 {
-            if secondary {
+            if secondary_down {
                 self.view.zoom = (self.view.zoom * (1.0 + wheel * ui::WHEEL_ZOOM_SENSITIVITY)).clamp(ui::MIN_ZOOM, ui::MAX_ZOOM);
             } else {
                 self.wheel_accumulator += wheel;
@@ -573,6 +570,16 @@ impl App {
             }
         } else {
             self.wheel_accumulator = 0.0;
+        }
+
+        // クリックによるページ送り（UI操作中ではない場合のみ）
+        if !ctx.wants_pointer_input() {
+            let (p_clicked, s_clicked) = ctx.input(|i| (
+                i.pointer.button_clicked(egui::PointerButton::Primary),
+                i.pointer.button_clicked(egui::PointerButton::Secondary),
+            ));
+            if p_clicked { self.go_next(ctx); }
+            if s_clicked { self.go_prev(ctx); }
         }
 
         let (extra1, extra2, middle) = ctx.input(|i| (
@@ -602,7 +609,6 @@ impl App {
                 self.set_display_mode(next);
             }
             "ToggleManga" => self.toggle_manga(ctx),
-            "ShowMenu"    => self.handle_action(ctx, widgets::ViewerAction::ShowMenu),
             _ => {}
         }
     }
@@ -633,15 +639,19 @@ impl App {
                 self.is_loading_archive = false;
             }
         }
-        if self.manager.target_index != self.last_target_index {
-            self.last_target_index = self.manager.target_index;
-        }
         self.sync_display_to_target(ctx);
         if self.error.is_some() || (self.manager.entries.is_empty() && !self.manager.is_listing) {
             self.is_loading_archive = false;
         }
     }
 
+    /// テクスチャの準備が整い次第 current を target に追いつかせる。
+    ///
+    /// ⚠️ ここは描写タイミング制御のコア。以下を変更するとロック/フリッカーの原因になる：
+    /// - is_ready の判定条件（マンガモードのペアリング判断を含む）
+    /// - folder_lock_until / page_lock_until のセットタイミング
+    /// - ctx.request_repaint() の呼び出し位置
+    /// 変更前にユーザーへ確認すること。
     fn sync_display_to_target(&mut self, ctx: &egui::Context) {
         let target = self.manager.target_index;
         if self.is_loading_archive || self.manager.current != target {
@@ -704,23 +714,6 @@ impl App {
         if let Some(act) = menu_act.or(tool_act) { self.handle_action(ctx, act); }
         if let Some(p) = tree_req { self.open_path(p, ctx); }
 
-        if self.ui.show_popup_menu {
-            egui::Area::new(egui::Id::new("context_menu"))
-                .fixed_pos(self.ui.popup_menu_pos)
-                .order(egui::Order::Foreground)
-                .show(ctx, |ui| {
-                    egui::Frame::menu(ui.style()).show(ui, |ui| {
-                        if let Some(act) = widgets::context_menu(ui, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug) {
-                            self.handle_action(ctx, act);
-                            self.ui.show_popup_menu = false;
-                        }
-                        if ui.input(|i| i.pointer.any_pressed()) && !ui.rect_contains_pointer(ui.max_rect()) {
-                            self.ui.show_popup_menu = false;
-                        }
-                    });
-                });
-        }
-
         self.draw_main_panel(ctx);
         self.toasts.draw(ctx);
     }
@@ -777,6 +770,7 @@ impl App {
             if !self.ui.show_sort_settings {
                 self.manager.apply_sorting(&self.config);
                 self.manager.clear_cache();
+                self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
                 self.save_config();
             }
         }
@@ -868,15 +862,12 @@ impl App {
             GoNextDir         => self.go_next_dir(ctx),
             Seek(idx)         => self.seek(idx, ctx),
             SetOpenFromEnd(b) => { self.config.open_from_end = b; self.manager.open_from_end = b; self.save_config(); }
-            ShowMenu          => {
-                self.ui.show_popup_menu = true;
-                self.ui.popup_menu_pos = ctx.input(|i| i.pointer.interact_pos().unwrap_or_default());
-            }
 
             // 表示・ズーム
             SetDisplayMode(m) => self.set_display_mode(m),
             ZoomIn            => self.zoom_in(),
             ZoomOut           => self.zoom_out(),
+            ZoomReset         => self.zoom_reset(),
             ToggleManga       => self.toggle_manga(ctx),
             ToggleMangaRtl    => { self.config.manga_rtl = !self.config.manga_rtl; self.save_config(); }
             ToggleLinear      => self.toggle_filter_mode(ctx),
@@ -933,6 +924,13 @@ impl App {
                 self.add_toast(msg.to_string(), ctx);
                 self.save_config();
             }
+            SetPdfRenderSize(s) => {
+                self.config.pdf_render_size = s;
+                self.save_config();
+                self.manager.clear_cache();
+                self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+            }
+            TogglePdfWarning => { self.config.show_pdf_warning = !self.config.show_pdf_warning; self.save_config(); }
             OpenLimiterSettings => {
                 self.ui.show_limiter_settings = true;
             }
@@ -944,6 +942,8 @@ impl App {
                 self.ui.show_tree = !self.ui.show_tree;
                 if self.ui.show_tree { self.sync_tree_to_current(); }
             }
+            // 廃止した ShowMenu などのアクションを無視する
+            _ => {}
         }
     }
 }
