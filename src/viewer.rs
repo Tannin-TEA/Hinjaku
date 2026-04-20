@@ -192,6 +192,20 @@ impl App {
         ctx.request_repaint();
     }
 
+    /// 現在の表示環境と設定に基づいた「最適な読み込み上限サイズ」を計算する
+    fn get_effective_max_dim(&self, ctx: &egui::Context) -> u32 {
+        let kind = self.manager.archive_path.as_ref().map(|p| utils::detect_kind(p)).unwrap_or(utils::ArchiveKind::Plain);
+        if kind == utils::ArchiveKind::Pdf {
+            self.config.pdf_render_size
+        } else {
+            // モニターの物理解像度を取得
+            let ppp = ctx.pixels_per_point();
+            let screen = ctx.screen_rect();
+            let monitor_res = (screen.width() * ppp).max(screen.height() * ppp) as u32;
+            monitor_res.clamp(1920, image::MAX_TEX_DIM) // 最小1920、最大4K
+        }
+    }
+
     fn rotate_current(&mut self, cw: bool, ctx: &egui::Context) {
         let indices: Vec<usize> = if self.view.manga_mode {
             vec![self.manager.current, self.manager.current + 1]
@@ -205,7 +219,8 @@ impl App {
                 self.manager.invalidate_cache_for(idx, &name);
             }
         }
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+        let max_dim = self.get_effective_max_dim(ctx);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -341,7 +356,8 @@ impl App {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
         self.manager.target_index = 0;
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+        let max_dim = self.get_effective_max_dim(ctx);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -352,7 +368,8 @@ impl App {
         self.manager.target_index = if self.view.manga_mode && last > 0 && last % 2 == 0 {
             last.saturating_sub(1)
         } else { last };
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+        let max_dim = self.get_effective_max_dim(ctx);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -361,7 +378,8 @@ impl App {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
         self.manager.target_index = idx;
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+        let max_dim = self.get_effective_max_dim(ctx);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -390,7 +408,8 @@ impl App {
         self.view.manga_mode = !self.view.manga_mode;
         self.config.manga_mode = self.view.manga_mode;
         self.save_config();
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+        let max_dim = self.get_effective_max_dim(ctx);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -403,7 +422,8 @@ impl App {
         };
         self.manager.clear_cache();
         self.save_config();
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+        let max_dim = self.get_effective_max_dim(ctx);
+        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -516,7 +536,8 @@ impl App {
         if !is_typing && !is_capturing && self.ui.show_sort_settings && k.sort_settings {
             self.manager.apply_sorting(&self.config);
             self.manager.clear_cache();
-            self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+            let max_dim = self.get_effective_max_dim(ctx);
+            self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
             self.save_config();
             self.ui.show_sort_settings = false;
         }
@@ -886,16 +907,12 @@ impl App {
         if let Some(act) = tool_act { self.handle_action(ctx, act); }
         if let Some(p) = tree_req { self.open_path(p, ctx); }
 
-<<<<<<< HEAD
         if !self.ui.boss_mode {
             self.draw_main_panel(ctx);
         } else {
             egui::CentralPanel::default().show(ctx, |_ui| {});
             self.draw_boss_mode(ctx);
         }
-=======
-        self.draw_main_panel(ctx);
->>>>>>> ea3fb89eaa5249526ec463952c454f504405ee1c
         self.toasts.draw(ctx);
     }
 
@@ -951,7 +968,8 @@ impl App {
             if !self.ui.show_sort_settings {
                 self.manager.apply_sorting(&self.config);
                 self.manager.clear_cache();
-                self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+                let max_dim = self.get_effective_max_dim(ctx);
+                self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
                 self.save_config();
             }
         }
@@ -1143,7 +1161,8 @@ impl App {
                 self.config.pdf_render_size = s;
                 self.save_config();
                 self.manager.clear_cache();
-                self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
+                let max_dim = self.get_effective_max_dim(ctx);
+                self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
             }
             TogglePdfWarning => { self.config.show_pdf_warning = !self.config.show_pdf_warning; self.save_config(); }
             OpenLimiterSettings => {

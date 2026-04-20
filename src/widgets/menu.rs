@@ -154,10 +154,7 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
         }
     });
     ui.menu_button("PDF品質", |ui| {
-<<<<<<< HEAD
         ui.set_min_width(120.0);
-=======
->>>>>>> ea3fb89eaa5249526ec463952c454f504405ee1c
         for s in [720, 1080, 1440, 1920, 2880] {
             if ui.selectable_label(config.pdf_render_size == s, format!("{}px", s)).clicked() {
                 ui.close_menu(); action = Some(ViewerAction::SetPdfRenderSize(s));
