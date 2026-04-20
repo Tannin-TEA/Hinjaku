@@ -25,7 +25,7 @@ impl UiState {
     fn new(config: &Config) -> Self {
         Self {
             show_settings:      false,
-            show_tree:          false,
+            show_tree:          config.show_tree,
             show_sort_settings: false,
             show_key_config:    false,
             show_debug:         false,
@@ -61,6 +61,11 @@ pub struct App {
     toasts:               toast::ToastManager,
     path_rx:              Receiver<PathBuf>,
     applied_initial_center: bool,
+    initial_center_frame:  u8,
+    is_mouse_gesture:     bool,
+    scroll_offset:        egui::Vec2,
+    viewport_origin:      egui::Pos2,
+    pending_scroll:       Option<egui::Vec2>,
 }
 
 impl App {
@@ -92,11 +97,20 @@ impl App {
 
         if !config.window_maximized {
             cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(config.window_width, config.window_height)));
-            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(config.window_x, config.window_y)));
+            if !config.window_centered {
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(config.window_x, config.window_y)));
+            }
         }
 
         let mut manager = Manager::new(cc.egui_ctx.clone(), archive_reader);
         manager.open_from_end = config.open_from_end;
+
+        if config.is_fullscreen {
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        } else if config.is_small_borderless {
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+        }
 
         if config.always_on_top {
             cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
@@ -106,7 +120,16 @@ impl App {
         let mut app = Self {
             manager,
             ui,
-            view:                   ViewState::new(),
+            view: ViewState {
+                display_mode: config.display_mode,
+                zoom: 1.0,
+                manga_mode: config.manga_mode,
+                manga_shift: false,
+                is_maximized: config.window_maximized,
+                is_fullscreen: config.is_fullscreen,
+                is_small_borderless: config.is_small_borderless,
+                effective_zoom: 1.0,
+            },
             config_path,
             wheel_accumulator:      0.0,
             is_loading_archive:     false,
@@ -121,7 +144,12 @@ impl App {
             toasts:                 toast::ToastManager::new(),
             path_rx:                integrator::install_message_hook(&cc.egui_ctx, window_title),
             applied_initial_center: false,
+            initial_center_frame:   0,
             config,
+            is_mouse_gesture:       false,
+            scroll_offset:          egui::Vec2::ZERO,
+            viewport_origin:        egui::Pos2::ZERO,
+            pending_scroll:         None,
         };
 
         if let Some(path) = initial_path {
@@ -160,7 +188,7 @@ impl App {
             self.manager.tree.clear_metadata_cache();
         }
         self.sync_tree_to_current();
-        self.is_loading_archive = !self.manager.entries.is_empty();
+        self.is_loading_archive = self.manager.is_listing;
         ctx.request_repaint();
     }
 
@@ -353,11 +381,15 @@ impl App {
 
     fn set_display_mode(&mut self, m: DisplayMode) {
         self.view.display_mode = m;
+        self.config.display_mode = m;
+        self.save_config();
         if m == DisplayMode::Manual { self.view.zoom = 1.0; }
     }
 
     fn toggle_manga(&mut self, ctx: &egui::Context) {
         self.view.manga_mode = !self.view.manga_mode;
+        self.config.manga_mode = self.view.manga_mode;
+        self.save_config();
         self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, self.config.pdf_render_size);
         ctx.request_repaint();
     }
@@ -377,28 +409,54 @@ impl App {
 
     // ── ウィンドウヘルパー ────────────────────────────────────────────────────
 
+    fn toggle_maximized(&mut self, ctx: &egui::Context) {
+        self.view.is_maximized = !self.view.is_maximized;
+        self.view.is_fullscreen = false;
+        self.view.is_small_borderless = false;
+        
+        self.config.is_fullscreen = false;
+        self.config.is_small_borderless = false;
+        self.save_config();
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.view.is_maximized));
+    }
+
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
         self.view.is_fullscreen = !self.view.is_fullscreen;
-        self.view.is_borderless = false;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+        self.view.is_maximized = false;
+        self.view.is_small_borderless = false;
+
+        self.config.is_fullscreen = self.view.is_fullscreen;
+        self.config.is_small_borderless = false;
+        self.save_config();
+
         ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.view.is_fullscreen));
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.view.is_fullscreen));
     }
 
-    fn toggle_borderless(&mut self, ctx: &egui::Context) {
-        self.view.is_borderless = !self.view.is_borderless;
+    fn toggle_small_borderless(&mut self, ctx: &egui::Context) {
+        self.view.is_small_borderless = !self.view.is_small_borderless;
         self.view.is_fullscreen = false;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.view.is_borderless));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.view.is_borderless));
+
+        self.config.is_small_borderless = self.view.is_small_borderless;
+        self.config.is_fullscreen = false;
+        self.save_config();
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.view.is_small_borderless));
     }
 
     fn exit_fullscreen(&mut self, ctx: &egui::Context) {
         self.view.is_fullscreen = false;
-        self.view.is_borderless = false;
+        self.view.is_small_borderless = false;
+
+        self.config.is_fullscreen = false;
+        self.config.is_small_borderless = false;
+        self.save_config();
+
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
     }
 
     fn toggle_always_on_top(&mut self, ctx: &egui::Context) {
@@ -463,11 +521,18 @@ impl App {
             self.ui.show_sort_settings = false;
         }
 
-        if self.ui.show_tree && !modal_open && !is_typing && !is_capturing {
-            self.handle_tree_navigation(ctx, k);
-        } else if !modal_open && !is_typing && !is_capturing {
-            self.handle_viewer_keys(ctx, k);
-            self.handle_mouse_input(ctx);
+        if !modal_open && !is_typing && !is_capturing {
+            // グローバルアクション (ツリー表示中でも常に有効)
+            if k.quit { self.save_config(); ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+
+            if self.ui.show_tree {
+                self.handle_tree_navigation(ctx, k);
+            } else {
+                if k.fullscreen { self.toggle_maximized(ctx); }
+                if k.borderless { self.toggle_fullscreen(ctx); }
+                if k.small_borderless { self.toggle_small_borderless(ctx); }
+                self.handle_viewer_keys(ctx, k);
+            }
         }
         if !modal_open && k.esc { self.exit_fullscreen(ctx); }
 
@@ -504,11 +569,15 @@ impl App {
             if let Some(p) = self.manager.tree.activate_current() {
                 let has = self.manager.tree.get_image_count(&p) > 0;
                 self.open_path(p, ctx);
-                if has { self.ui.show_tree = false; }
+                if has { 
+                    self.ui.show_tree = false; 
+                    self.config.show_tree = false;
+                    self.save_config();
+                }
             }
         }
-        if k.esc         { self.ui.show_tree = false; }
-        if k.toggle_tree { self.ui.show_tree = false; }
+        if k.esc         { self.ui.show_tree = false; self.config.show_tree = false; self.save_config(); }
+        if k.toggle_tree { self.ui.show_tree = false; self.config.show_tree = false; self.save_config(); }
     }
 
     fn handle_viewer_keys(&mut self, ctx: &egui::Context, k: &input::KeyboardState) {
@@ -529,9 +598,6 @@ impl App {
         if k.toggle_rtl       { self.config.manga_rtl = !self.config.manga_rtl; self.save_config(); }
         if k.toggle_linear    { self.toggle_filter_mode(ctx); }
         if k.toggle_debug     { self.ui.show_debug = !self.ui.show_debug; }
-        if k.quit             { self.save_config(); ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
-        if k.fullscreen       { self.toggle_fullscreen(ctx); }
-        if k.borderless       { self.toggle_borderless(ctx); }
         if k.open_key_config  { self.ui.show_key_config = true; }
         if k.open_external_1  { self.open_external(0, ctx); }
         if k.open_external_2  { self.open_external(1, ctx); }
@@ -571,10 +637,27 @@ impl App {
         if k.toggle_tree {
             self.ui.show_tree = !self.ui.show_tree;
             if self.ui.show_tree { self.sync_tree_to_current(); }
+            self.config.show_tree = self.ui.show_tree;
+            self.save_config();
         }
     }
 
     fn handle_mouse_input(&mut self, ctx: &egui::Context) {
+        self.pending_scroll = None;
+
+        // ポップアップメニュー（右クリックメニュー等）が開いている時だけ入力をガードする
+        // wants_pointer_input() は画像ウィジェット自体も含まれるため、ここでは判定しない
+        if ctx.memory(|m| m.any_popup_open()) {
+            return;
+        }
+
+        // 小画面ボーダレス時、Alt + 左ドラッグでウィンドウを移動できるようにする
+        // 単なる左クリック（ページ送り）と衝突しないよう、Altキーを必須にする
+        if self.view.is_small_borderless && ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary) && i.modifiers.alt) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            return; // 移動中は他の操作をさせない
+        }
+
         let (wheel, secondary_down) = ctx.input(|i| (
             i.smooth_scroll_delta.y, 
             i.pointer.button_down(egui::PointerButton::Secondary)
@@ -582,7 +665,17 @@ impl App {
 
         if wheel != 0.0 {
             if secondary_down {
-                self.view.zoom = (self.view.zoom * (1.0 + wheel * ui::WHEEL_ZOOM_SENSITIVITY)).clamp(ui::MIN_ZOOM, ui::MAX_ZOOM);
+                self.is_mouse_gesture = true;
+                let old_zoom = self.view.zoom;
+                let new_zoom = (old_zoom * (1.0 + wheel * ui::WHEEL_ZOOM_SENSITIVITY)).clamp(ui::MIN_ZOOM, ui::MAX_ZOOM);
+                self.view.zoom = new_zoom;
+                let ratio = new_zoom / old_zoom;
+                if let Some(mouse_pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                    let rel = mouse_pos - self.viewport_origin;
+                    let x = (rel.x + self.scroll_offset.x) * ratio - rel.x;
+                    let y = (rel.y + self.scroll_offset.y) * ratio - rel.y;
+                    self.pending_scroll = Some(egui::vec2(x.max(0.0), y.max(0.0)));
+                }
             } else {
                 self.wheel_accumulator += wheel;
                 if self.wheel_accumulator.abs() >= ui::WHEEL_NAV_THRESHOLD {
@@ -595,13 +688,16 @@ impl App {
         }
 
         // クリックによるページ送り（UI操作中ではない場合のみ）
-        if !ctx.wants_pointer_input() {
-            let (p_clicked, s_clicked) = ctx.input(|i| (
-                i.pointer.button_clicked(egui::PointerButton::Primary),
-                i.pointer.button_clicked(egui::PointerButton::Secondary),
-            ));
-            if p_clicked { self.go_next(ctx); }
-            if s_clicked { self.go_prev(ctx); }
+        let (p_clicked, s_clicked) = ctx.input(|i| (
+            i.pointer.button_clicked(egui::PointerButton::Primary),
+            i.pointer.button_clicked(egui::PointerButton::Secondary),
+        ));
+        if p_clicked { self.go_next(ctx); }
+        if s_clicked && !self.is_mouse_gesture { self.go_prev(ctx); }
+
+        // 右ボタンが離されたらジェスチャー状態をリセットする
+        if !secondary_down {
+            self.is_mouse_gesture = false;
         }
 
         let (extra1, extra2, middle) = ctx.input(|i| (
@@ -653,6 +749,7 @@ impl App {
         
         if let Some(err) = list_error {
             self.add_toast(err, ctx);
+            self.is_loading_archive = false;
         }
 
         for (idx, err) in failures {
@@ -722,9 +819,60 @@ impl App {
 
     fn draw_ui(&mut self, ctx: &egui::Context) {
         self.draw_windows(ctx);
-        let menu_act = widgets::main_menu_bar(ctx, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
-        // ステータスバーをツリーより先に宣言することで、ウィンドウ全幅を確保する
-        let tool_act = widgets::bottom_toolbar(ctx, &self.manager, &self.config, &self.view, self.is_nav_locked(ctx));
+
+        let mut menu_act = None;
+        let mut tool_act = None;
+
+        if self.view.is_fullscreen || self.view.is_small_borderless {
+            // ボーダレスモード：マウスホバーでオーバーレイ表示
+            let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
+            let screen_rect = ctx.screen_rect();
+
+            let in_menu_zone   = mouse_pos.map_or(false, |p| p.y < 40.0);
+            let in_status_zone = mouse_pos.map_or(false, |p| p.y > screen_rect.height() - 40.0);
+
+            // 前フレームのレイヤー情報からマウスがオーバーレイ（ドロップダウン含む）上にいるか検出
+            let mouse_over_overlay = mouse_pos.map_or(false, |p| {
+                ctx.layer_id_at(p).map_or(false, |id| id.order == egui::Order::Foreground)
+            });
+
+            // メニューとステータスバーはどちらかの条件が満たされたら両方表示
+            let show_overlay = in_menu_zone || in_status_zone || mouse_over_overlay;
+
+            let show_menu   = show_overlay;
+            let show_status = show_overlay;
+
+            if show_menu {
+                egui::Area::new(egui::Id::new("menu_overlay"))
+                    .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, 0.0))
+                    .order(egui::Order::Foreground)
+                    .interactable(true)
+                    .show(ctx, |ui| {
+                        egui::Frame::menu(ui.style()).fill(ui.visuals().window_fill().linear_multiply(0.9)).show(ui, |ui| {
+                            ui.set_width(screen_rect.width());
+                            let (act, _) = widgets::main_menu_bar_inner(ui, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
+                            menu_act = act;
+                        });
+                    });
+            }
+            if show_status {
+                egui::Area::new(egui::Id::new("status_overlay"))
+                    .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(0.0, 0.0))
+                    .order(egui::Order::Foreground)
+                    .interactable(true)
+                    .show(ctx, |ui| {
+                        egui::Frame::menu(ui.style()).fill(ui.visuals().window_fill().linear_multiply(0.9)).show(ui, |ui| {
+                            ui.set_width(screen_rect.width());
+                            tool_act = widgets::bottom_toolbar_inner(ui, &self.manager, &self.config, &self.view, self.is_nav_locked(ctx));
+                        });
+                    });
+            }
+        } else {
+            let (act, _) = widgets::main_menu_bar(ctx, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
+            menu_act = act;
+            tool_act = widgets::bottom_toolbar(ctx, &self.manager, &self.config, &self.view, self.is_nav_locked(ctx));
+        }
+
         let mut tree_req = None;
         if self.ui.show_tree {
             egui::SidePanel::left("tree")
@@ -734,7 +882,8 @@ impl App {
                 .show(ctx, |ui| widgets::sidebar_ui(ui, &mut self.manager.tree, &self.manager.archive_path, ctx, &mut tree_req));
             self.manager.tree.scroll_to_selected = false;
         }
-        if let Some(act) = menu_act.or(tool_act) { self.handle_action(ctx, act); }
+        if let Some(act) = menu_act { self.handle_action(ctx, act); }
+        if let Some(act) = tool_act { self.handle_action(ctx, act); }
         if let Some(p) = tree_req { self.open_path(p, ctx); }
 
 <<<<<<< HEAD
@@ -848,7 +997,11 @@ impl App {
                 return;
             }
             let is_at_end = self.manager.current >= self.manager.entries.len().saturating_sub(2);
-            let (_, act) = painter::draw_main_area(ui, &self.manager, &self.view, self.config.manga_rtl, ctx, is_at_end);
+            let sec_down = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
+            let (_, act, eff_zoom, scroll_off, vp_origin) = painter::draw_main_area(ui, &self.manager, &self.view, self.config.manga_rtl, ctx, is_at_end, sec_down, self.pending_scroll);
+            self.view.effective_zoom = eff_zoom;
+            self.scroll_offset = scroll_off;
+            self.viewport_origin = vp_origin;
             if let Some(widgets::ViewerAction::NextDir) = act { 
                 // 自動めくり時と同様、リミッター設定（最後で止まる）を尊重する
                 if !(self.config.limiter_mode && self.config.limiter_stop_at_end) {
@@ -945,7 +1098,7 @@ impl App {
                 self.save_config();
             }
             ResizeWindow(w, h) => self.resize_window(ctx, w, h),
-            MoveToCenter       => window::move_to_center(ctx, self.config.window_width, self.config.window_height),
+            MoveToCenter       => { window::move_to_center(ctx, self.config.window_width, self.config.window_height); },
 
             // ファイル・システム
             OpenRecent(p) => {
@@ -998,14 +1151,16 @@ impl App {
             }
             SetLimiterPageDuration(d) => { self.config.limiter_page_duration = d; self.save_config(); }
             SetLimiterFolderDuration(d) => { self.config.limiter_folder_duration = d; self.save_config(); }
-            #[allow(unreachable_patterns)]
+            ToggleFullscreen => self.toggle_maximized(ctx),
+            ToggleBorderless => self.toggle_fullscreen(ctx),
+            ToggleSmallBorderless => self.toggle_small_borderless(ctx),
             Exit => { self.save_config(); ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
             ToggleTree => {
                 self.ui.show_tree = !self.ui.show_tree;
                 if self.ui.show_tree { self.sync_tree_to_current(); }
+                self.config.show_tree = self.ui.show_tree;
+                self.save_config();
             }
-            // 廃止した ShowMenu などのアクションを無視する
-            _ => {}
         }
     }
 }
@@ -1020,9 +1175,14 @@ impl eframe::App for App {
         }
 
         // 2. 起動時の中央配置
+        // eframeの初期化が完全に終わるまで2フレームスキップし、その後成功するまでリトライ
         if self.config.window_centered && !self.applied_initial_center {
-            window::move_to_center(ctx, self.config.window_width, self.config.window_height);
-            self.applied_initial_center = true;
+            self.initial_center_frame = self.initial_center_frame.saturating_add(1);
+            if self.initial_center_frame >= 3 {
+                if window::move_to_center(ctx, self.config.window_width, self.config.window_height) {
+                    self.applied_initial_center = true;
+                }
+            }
         }
 
         let dropped: Option<PathBuf> = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.as_ref().cloned()));
@@ -1038,6 +1198,7 @@ impl eframe::App for App {
         // 3. 内部状態の更新
         self.update_title(ctx);
         window::sync_config_with_window(ctx, &mut self.config, self.last_resize_time);
+        self.view.is_maximized = self.config.window_maximized;
         self.handle_debug_logging(ctx);
         self.process_manager_update(ctx);
 
@@ -1047,6 +1208,17 @@ impl eframe::App for App {
 
         // 5. 描画
         self.draw_ui(ctx);
+
+        // 6. マウス入力（draw_ui 後に処理: 描画でポップアップが開いた同フレームも正しくガードできる）
+        {
+            let is_typing    = ctx.wants_keyboard_input();
+            let is_capturing = self.ui.capturing_key_for.is_some();
+            let modal_open   = self.ui.show_settings || self.ui.show_key_config
+                            || self.config.is_first_run || self.ui.show_sort_settings || self.ui.show_limiter_settings;
+            if !modal_open && !is_typing && !is_capturing && !self.ui.show_tree {
+                self.handle_mouse_input(ctx);
+            }
+        }
     }
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {

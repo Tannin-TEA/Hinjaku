@@ -88,6 +88,7 @@ pub fn ui_dir_tree(
                 } else {
                     nav_tree.expanded.insert(path);
                 }
+                *open_req = Some(nav_tree.selected.clone().unwrap()); // 選択されたフォルダを開く
             }
         }
     });

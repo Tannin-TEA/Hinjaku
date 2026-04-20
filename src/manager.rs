@@ -71,8 +71,8 @@ impl CachedImage {
         match self {
             CachedImage::Static(tex) => (tex, None),
             CachedImage::Animated { frames, total_ms, loop_start_time } => {
-                if frames.is_empty() || *total_ms == 0 {
-                    return (&frames[0].0, None);
+                if *total_ms == 0 || frames.is_empty() {
+                    return (&frames.first().expect("BUG: Animated with 0 frames").0, None);
                 }
                 let elapsed_ms = ((now - loop_start_time) * 1000.0) as u32 % total_ms;
                 let mut acc = 0u32;
@@ -120,6 +120,7 @@ pub struct Manager {
     current_idx_shared: Arc<AtomicUsize>,
     generation: Arc<AtomicU64>,
     pub archive_reader: Arc<dyn ArchiveReader>, // 外部からも参照できるように pub に変更
+    ctx: egui::Context,
 }
 
 impl Manager {
@@ -179,17 +180,17 @@ impl Manager {
         let bytes = if let Some(idx) = req.entry_index {
             if matches!(kind, utils::ArchiveKind::Zip) {
                 if zip_cache.as_ref().map(|(p, _)| p != &req.archive_path).unwrap_or(true) {
-                let file = std::fs::File::open(&req.archive_path).map_err(|e| e.to_string())?;
-                // ZipArchive は自身でシークを管理するため、BufReader は不要。File を直接渡す。
-                let zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-                *zip_cache = Some((req.archive_path.clone(), zip));
-            }
-            let (_, ref mut zip) = zip_cache.as_mut().ok_or("Cache error")?;
-            let mut entry = zip.by_index(idx).map_err(|e| e.to_string())?;
-            // サイズが既知なので、事前に確保して read_to_end を使う方が効率的
-            let mut buf = Vec::with_capacity(entry.size() as usize);
-            entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-            buf
+                    let file = std::fs::File::open(&req.archive_path).map_err(|e| e.to_string())?;
+                    // ZipArchive は自身でシークを管理するため、BufReader は不要。File を直接渡す。
+                    let zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+                    *zip_cache = Some((req.archive_path.clone(), zip));
+                }
+                let (_, ref mut zip) = zip_cache.as_mut().ok_or("Cache error")?;
+                let mut entry = zip.by_index(idx).map_err(|e| e.to_string())?;
+                // サイズが既知なので、事前に確保して read_to_end を使う方が効率的
+                let mut buf = Vec::with_capacity(entry.size() as usize);
+                entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+                buf
             } else if matches!(kind, utils::ArchiveKind::Pdf) {
                 if zip_cache.is_some() { *zip_cache = None; }
                 archive_reader.read_entry(&req.archive_path, &req.entry_name, Some(idx), req.max_dim).map_err(|e| e.to_string())?
@@ -208,14 +209,14 @@ impl Manager {
         let ext = req.entry_name.to_ascii_lowercase();
 
         if (ext.ends_with(".gif") || ext.ends_with(".webp")) && bytes.len() <= loading::MAX_ANIM_DECODE_SIZE {
-            let frames_res = if ext.ends_with(".gif") {
+            let frames_res: ::image::ImageResult<Vec<::image::Frame>> = if ext.ends_with(".gif") {
                 ::image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&bytes))
-                    .and_then(|d| d.into_frames().collect_frames())
+                    .and_then(|d| d.into_frames().collect::<::image::ImageResult<Vec<_>>>())
             } else {
                 ::image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(&bytes))
                     .and_then(|d| {
                         if d.has_animation() {
-                            d.into_frames().collect_frames()
+                            d.into_frames().collect::<::image::ImageResult<Vec<_>>>()
                         } else {
                             Err(::image::ImageError::IoError(std::io::Error::new(
                                 std::io::ErrorKind::Other,
@@ -227,15 +228,21 @@ impl Manager {
 
             match frames_res {
                 Ok(frames) => {
+                    // メモリ保護: フレーム数が極端に多い場合は静止画として扱う
+                    if frames.len() > 200 {
+                        return Ok(vec![FrameData { image: frames[0].clone().into_buffer(), delay_ms: 0 }]);
+                    }
+
                     let mut result_frames = Vec::new();
                     for frame in frames {
-                        let img = frame.buffer().clone();
-                        // アニメーション画像はPDFではないため、定数の MAX_TEX_DIM (1920) を使用
-                        let img = downscale_if_needed(img, image::MAX_TEX_DIM, req.filter_mode);
-                        let img = apply_rotation(img, req.rotation);
-                        let (n, d) = frame.delay().numer_denom_ms();
+                        let delay = frame.delay();
+                        let (n, d) = delay.numer_denom_ms();
                         let delay_ms = if d > 0 { n / d } else { loading::DEFAULT_ANIM_FRAME_DELAY_MS };
                         let delay_ms = if delay_ms < loading::MIN_ANIM_FRAME_DELAY_MS { loading::DEFAULT_ANIM_FRAME_DELAY_MS } else { delay_ms };
+
+                        let img = frame.into_buffer();
+                        let img = downscale_if_needed(img, image::MAX_TEX_DIM, req.filter_mode);
+                        let img = apply_rotation(img, req.rotation);
                         result_frames.push(FrameData { image: img, delay_ms });
                     }
                     return Ok(result_frames);
@@ -264,7 +271,6 @@ impl Manager {
         let current_idx_shared = Arc::new(AtomicUsize::new(0));
         let generation = Arc::new(AtomicU64::new(0));
         let req_rx = Arc::new(Mutex::new(req_rx));
-        let ctx = ctx;
 
         // ワーカースレッドを作成
         Self::spawn_worker_threads(
@@ -297,45 +303,56 @@ impl Manager {
             current_idx_shared,
             generation,
             archive_reader,
+            ctx,
         }
     }
 
     pub fn update(&mut self, ctx: &egui::Context, config: &Config, manga: bool, shift: bool) -> (Vec<(usize, String)>, Option<String>) {
         // アーカイブリストの取得完了をチェック
         let mut list_error = None;
-        if let Some(rx) = &self.list_rx {
-            if let Ok(res) = rx.try_recv() {
-                self.is_listing = false;
-                self.list_rx = None;
-                match res {
-                    Ok((path, entries)) => {
-                        self.entries_meta = entries; // archive_reader から取得したメタデータ
-                        self.archive_path = Some(path);
-                        self.entries = self.entries_meta.iter().map(|e| e.name.clone()).collect();
-                        if !self.entries.is_empty() {
-                            self.apply_sorting(config);
-                            let go_last = self.pending_go_last;
-                            self.pending_go_last = false;
-                            if let Some(focus) = self.pending_focus.take() {
-                                self.current = self.entries.iter().position(|n| n.contains(&focus)).unwrap_or(0);
-                            } else {
-                                self.current = if go_last {
-                                    let last = self.entries.len().saturating_sub(1);
-                                    if manga && last > 0 {
-                                        if (last % 2 == 0) == shift { last } else { last.saturating_sub(1) }
-                                    } else { last }
-                                } else { 0 };
+        let mut list_finished = false;
+        if let Some(ref rx) = self.list_rx {
+            match rx.try_recv() {
+                Ok(res) => {
+                    list_finished = true;
+                    match res {
+                        Ok((path, entries)) => {
+                            self.entries_meta = entries;
+                            self.archive_path = Some(path);
+                            self.entries = self.entries_meta.iter().map(|e| e.name.clone()).collect();
+                            if !self.entries.is_empty() {
+                                self.apply_sorting(config);
+                                let go_last = self.pending_go_last;
+                                self.pending_go_last = false;
+                                if let Some(focus) = self.pending_focus.take() {
+                                    self.current = self.entries.iter().position(|n| n.contains(&focus)).unwrap_or(0);
+                                } else {
+                                    self.current = if go_last {
+                                        let last = self.entries.len().saturating_sub(1);
+                                        if manga && last > 0 {
+                                            if (last % 2 == 0) == shift { last } else { last.saturating_sub(1) }
+                                        } else { last }
+                                    } else { 0 };
+                                }
+                                self.target_index = self.current;
+                                self.schedule_prefetch(config.filter_mode, manga, config.pdf_render_size);
                             }
-                            self.target_index = self.current;
-                            // リストが確定したのでプリフェッチを開始（manga フラグを引き継ぐ）
-                            self.schedule_prefetch(config.filter_mode, manga, config.pdf_render_size);
                         }
-                    }
-                    Err(e) => { list_error = Some(e); }
+                        Err(e) => { list_error = Some(e); }
                 }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    list_finished = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-
+        if list_finished {
+            self.is_listing = false;
+            self.list_rx = None;
+            ctx.request_repaint();
+        }
+        
         let mut failures = Vec::new();
         let current_gen = self.generation.load(Ordering::Relaxed);
         let mut upload_count = 0;
@@ -355,7 +372,7 @@ impl Manager {
                         let ci = ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
                         let tex = ctx.load_texture(format!("img_{}", result.key), ci, filter);
                         CachedImage::Static(tex)
-                    } else {
+                    } else if !frames.is_empty() {
                         let total_ms = frames.iter().map(|f| f.delay_ms).sum();
                         let tex_frames = frames.into_iter().enumerate().map(|(fi, f)| {
                             let ci = ColorImage::from_rgba_unmultiplied([f.image.width() as usize, f.image.height() as usize], f.image.as_raw());
@@ -366,6 +383,8 @@ impl Manager {
                             total_ms,
                             loop_start_time: ctx.input(|i| i.time),
                         }
+                    } else {
+                        continue;
                     };
 
                     self.cache.insert(result.key.clone(), cached);
@@ -422,6 +441,10 @@ impl Manager {
     pub fn open_path(&mut self, path: PathBuf, _config: &Config) {
         let path = utils::clean_path(&path);
         self.clear_cache();
+        self.entries.clear();
+        self.entries_meta.clear();
+        self.current = 0;
+        self.target_index = 0;
         self.is_listing = true;
         self.pending_go_last = self.open_from_end;
 
@@ -439,12 +462,14 @@ impl Manager {
         self.list_rx = Some(rx);
         let bp_clone = base_path.clone();
         let reader = Arc::clone(&self.archive_reader);
+        let ctx = self.ctx.clone();
 
         std::thread::spawn(move || {
             let res = reader.list_images(&bp_clone)
                 .map(|entries| (bp_clone, entries))
                 .map_err(|e| e.user_message());
             let _ = tx.send(res); // 結果を送信
+            ctx.request_repaint();
         });
 
         // 暫定的にパスだけ設定し、リストは update で受け取る
@@ -458,6 +483,10 @@ impl Manager {
     pub fn move_to_dir(&mut self, path: PathBuf, focus_hint: Option<PathBuf>, go_last: bool, _config: &Config, _manga: bool, _shift: bool) {
         let path = crate::utils::clean_path(&path);
         self.clear_cache();
+        self.entries.clear();
+        self.entries_meta.clear();
+        self.current = 0;
+        self.target_index = 0;
         self.is_listing = true;
         self.pending_go_last = go_last;
         self.pending_focus = focus_hint
@@ -467,12 +496,14 @@ impl Manager {
         self.list_rx = Some(rx);
         let bp_clone = path.clone();
         let reader = Arc::clone(&self.archive_reader);
+        let ctx = self.ctx.clone();
 
         std::thread::spawn(move || {
             let res = reader.list_images(&bp_clone)
                 .map(|entries| (bp_clone, entries))
                 .map_err(|e| e.user_message());
             let _ = tx.send(res);
+            ctx.request_repaint();
         });
 
         self.archive_path = Some(path);

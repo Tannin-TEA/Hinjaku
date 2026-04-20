@@ -12,17 +12,40 @@ pub fn main_menu_bar(
     view: &ViewState,
     show_tree: bool,
     show_debug: bool,
-) -> Option<ViewerAction> {
-    let mut action = None;
+) -> (Option<ViewerAction>, bool) {
     TopBottomPanel::top("top_panel").show(ctx, |ui| {
-        menu::bar(ui, |ui| {
-            if let Some(act) = ui.menu_button("ファイル", |ui| { ui.set_min_width(220.0); file_menu(ui, config, manager) }).inner.flatten() { action = Some(act); }
-            if let Some(act) = ui.menu_button("表示", |ui| { ui.set_min_width(220.0); view_menu(ui, config, manager, view, show_tree) }).inner.flatten() { action = Some(act); }
-            if let Some(act) = ui.menu_button("フォルダ", |ui| { ui.set_min_width(220.0); folder_menu(ui, config) }).inner.flatten() { action = Some(act); }
-            if let Some(act) = ui.menu_button("オプション", |ui| { ui.set_min_width(220.0); option_menu(ui, config, show_debug) }).inner.flatten() { action = Some(act); }
-        });
+        main_menu_bar_inner(ui, config, manager, view, show_tree, show_debug)
+    }).inner
+}
+
+pub fn main_menu_bar_inner(
+    ui: &mut egui::Ui,
+    config: &config::Config,
+    manager: &Manager,
+    view: &ViewState,
+    show_tree: bool,
+    show_debug: bool,
+) -> (Option<ViewerAction>, bool) {
+    let mut action = None;
+    let mut menu_open = false;
+    menu::bar(ui, |ui| {
+        let r = ui.menu_button("ファイル",  |ui| { ui.set_min_width(220.0); file_menu(ui, config, manager) });
+        if r.inner.is_some() { menu_open = true; }
+        if let Some(act) = r.inner.flatten() { action = Some(act); }
+
+        let r = ui.menu_button("表示",     |ui| { ui.set_min_width(220.0); view_menu(ui, config, manager, view, show_tree) });
+        if r.inner.is_some() { menu_open = true; }
+        if let Some(act) = r.inner.flatten() { action = Some(act); }
+
+        let r = ui.menu_button("フォルダ", |ui| { ui.set_min_width(220.0); folder_menu(ui, config) });
+        if r.inner.is_some() { menu_open = true; }
+        if let Some(act) = r.inner.flatten() { action = Some(act); }
+
+        let r = ui.menu_button("オプション", |ui| { ui.set_min_width(220.0); option_menu(ui, config, show_debug) });
+        if r.inner.is_some() { menu_open = true; }
+        if let Some(act) = r.inner.flatten() { action = Some(act); }
     });
-    action
+    (action, menu_open)
 }
 
 fn file_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager) -> Option<ViewerAction> {
@@ -88,6 +111,16 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
     }
     if ui.selectable_label(view.display_mode == crate::types::DisplayMode::Manual, "等倍表示").clicked() {
         ui.close_menu(); action = Some(ViewerAction::SetDisplayMode(crate::types::DisplayMode::Manual));
+    }
+    ui.separator();
+    if ui.selectable_label(view.is_maximized, "最大化表示 (Enter)").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::ToggleFullscreen);
+    }
+    if ui.selectable_label(view.is_fullscreen, "全画面ボーダレス (Alt+Enter)").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::ToggleBorderless);
+    }
+    if ui.selectable_label(view.is_small_borderless, "小画面ボーダレス (Shift+Enter)").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::ToggleSmallBorderless);
     }
     ui.separator();
     if ui.button("拡大 (+)").clicked() { action = Some(ViewerAction::ZoomIn); }

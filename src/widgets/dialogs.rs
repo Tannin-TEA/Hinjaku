@@ -424,8 +424,8 @@ pub fn about_window(ctx: &egui::Context, show: &mut bool) {
                     ("rust-ini",      "MIT",               "https://github.com/amrayn/rust-ini"),
                     ("windows-sys",   "MIT / Apache-2.0",  "https://github.com/microsoft/windows-rs"),
                     ("rfd",           "MIT",               "https://github.com/PolyMeilex/rfd"),
-                    ("Pdfium (Source)", "BSD 3-Clause",      "https://pdfium.googlesource.com/pdfium/"),
-                    ("Pdfium (Binaries)", "BSD 3-Clause",      "https://github.com/bblanchon/pdfium-binaries"),
+                    ("PDFium (公式サイト)", "BSD 3-Clause",      "https://pdfium.googlesource.com/pdfium/"),
+                    ("PDFium (DLL入手先)", "BSD 3-Clause",      "https://github.com/bblanchon/pdfium-binaries"),
                 ];
                 for (name, license, url) in licenses {
                     ui.vertical(|ui| {

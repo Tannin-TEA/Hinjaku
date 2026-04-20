@@ -9,16 +9,19 @@ fn init_pdfium() -> Result<Pdfium> {
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("./"));
 
-    let bindings =
-        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
-            library_path.to_str().unwrap_or("./"),
-        ))
-        .or_else(|_| {
-            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-        })
-        .map_err(|_| {
-            HinjakuError::Archive("pdfium.dll が見つからないか、読み込めません。".to_string())
-        })?;
+    // PDFium のバインディングを取得。
+    // OS の LoadLibrary キャッシュにより、同一プロセス内での 2 回目以降の呼び出しは高速です。
+    let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
+        library_path.to_str().unwrap_or("./"),
+    ))
+    .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")))
+    .map_err(|_| {
+        HinjakuError::Archive(
+            "pdfium.dll が見つからないか、読み込めません。\n\
+             公式: https://pdfium.googlesource.com/pdfium/\n\
+             DL先: https://github.com/bblanchon/pdfium-binaries".to_string()
+        )
+    })?;
 
     Ok(Pdfium::new(bindings))
 }

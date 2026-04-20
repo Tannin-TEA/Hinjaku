@@ -17,7 +17,8 @@ pub mod ui {
     /// アーカイブ・フォルダを新規に開いた直後のロック時間 (秒)
     pub const FOLDER_NAV_GUARD_DURATION: f64 = 0.1;
     /// ページめくりやマンガモード同期が完了した直後のロック時間 (秒)
-    pub const PAGE_NAV_GUARD_DURATION: f64 = 0.01;
+    /// 人間の目のフレームレート (24FPS) に合わせ、暴走を抑制するために 0.042 に設定
+    pub const PAGE_NAV_GUARD_DURATION: f64 = 0.042;
     /// トースト通知の表示時間 (秒)
     pub const TOAST_DURATION: f64 = 10.0;
     /// マウスホイールでページをめくる際のしきい値
@@ -40,8 +41,8 @@ pub mod ui {
 /// - 過去に 4 / 5 へ増やされてCPU負荷が問題になった経緯がある (0.1.2)。
 /// - 変更するなら必ず理由と影響を提示してから行うこと。
 pub mod loading {
-    /// アニメーションを試みる最大ファイルサイズ (30MB)
-    pub const MAX_ANIM_DECODE_SIZE: usize = 30 * 1024 * 1024;
+    /// アニメーションを試みる最大ファイルサイズ (50MB)
+    pub const MAX_ANIM_DECODE_SIZE: usize = 50 * 1024 * 1024;
     /// アニメーションの最小フレーム遅延 (これより短い場合は 100ms に補正)
     pub const MIN_ANIM_FRAME_DELAY_MS: u32 = 20;
     /// アニメーションのデフォルト遅延

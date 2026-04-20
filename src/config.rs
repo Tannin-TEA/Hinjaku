@@ -3,6 +3,13 @@ use ini::Ini;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(PartialEq, Copy, Clone, Debug)]
+pub enum DisplayMode {
+    Fit,
+    WindowFit,
+    Manual,
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SortMode {
     Name,
@@ -112,6 +119,16 @@ pub struct Config {
     pub show_pdf_warning: bool,
     /// PDFのレンダリングサイズ（長辺）
     pub pdf_render_size: u32,
+    /// マンガモード
+    pub manga_mode: bool,
+    /// 表示モード
+    pub display_mode: DisplayMode,
+    /// フルスクリーンボーダレス
+    pub is_fullscreen: bool,
+    /// 小画面ボーダレス
+    pub is_small_borderless: bool,
+    /// ツリーの表示
+    pub show_tree: bool,
 }
 
 impl Default for Config {
@@ -163,6 +180,11 @@ impl Default for Config {
             limiter_stop_at_end: false,
             show_pdf_warning: true,
             pdf_render_size: 1920,
+            manga_mode: false,
+            display_mode: DisplayMode::Fit,
+            is_fullscreen: false,
+            is_small_borderless: false,
+            show_tree: false,
             keys: [
                 ("PrevPage", "ArrowLeft, P"),
                 ("NextPage", "ArrowRight, N"),
@@ -175,6 +197,7 @@ impl Default for Config {
                 ("Enter", "Enter"),
                 ("ToggleFullscreen", "Enter"),
                 ("ToggleBorderless", "Alt+Enter"),
+                ("ToggleSmallBorderless", "Shift+Enter"),
                 ("Escape", "Escape"),
                 ("ToggleTree", "T"),
                 ("ToggleFit", "F"),
@@ -285,6 +308,18 @@ pub fn load_config_file(custom_name: Option<&str>) -> (Config, Option<PathBuf>) 
             if let Some(v) = sec.get("LimiterStopAtStart") { cfg.limiter_stop_at_start = v == "true"; }
             if let Some(v) = sec.get("LimiterStopAtEnd") { cfg.limiter_stop_at_end = v == "true"; }
 
+            if let Some(v) = sec.get("MangaMode") { cfg.manga_mode = v == "true"; }
+            if let Some(v) = sec.get("DisplayMode") {
+                cfg.display_mode = match v.to_lowercase().as_str() {
+                    "windowfit" => DisplayMode::WindowFit,
+                    "manual"    => DisplayMode::Manual,
+                    _           => DisplayMode::Fit,
+                };
+            }
+            if let Some(v) = sec.get("IsFullscreen") { cfg.is_fullscreen = v == "true"; }
+            if let Some(v) = sec.get("IsSmallBorderless") { cfg.is_small_borderless = v == "true"; }
+            if let Some(v) = sec.get("ShowTree") { cfg.show_tree = v == "true"; }
+
 
             if let Some(v) = sec.get("Renderer") {
                 cfg.renderer = match v.to_lowercase().as_str() {
@@ -367,7 +402,16 @@ pub fn save_config_file(cfg: &Config, path: &std::path::Path) -> Result<()> {
         .set("LimiterStopAtEnd", cfg.limiter_stop_at_end.to_string())
         .set("ShowPdfWarning", cfg.show_pdf_warning.to_string())
         .set("PdfRenderSize", cfg.pdf_render_size.to_string())
-        .set("OpenFromEnd", cfg.open_from_end.to_string());
+        .set("OpenFromEnd", cfg.open_from_end.to_string())
+        .set("MangaMode", cfg.manga_mode.to_string())
+        .set("DisplayMode", match cfg.display_mode {
+            DisplayMode::Fit => "Fit",
+            DisplayMode::WindowFit => "WindowFit",
+            DisplayMode::Manual => "Manual",
+        })
+        .set("IsFullscreen", cfg.is_fullscreen.to_string())
+        .set("IsSmallBorderless", cfg.is_small_borderless.to_string())
+        .set("ShowTree", cfg.show_tree.to_string());
     
     for (i, app) in cfg.external_apps.iter().enumerate() {
         ini.with_section(Some(format!("App_{}", i + 1)))

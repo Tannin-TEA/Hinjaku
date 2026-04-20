@@ -117,24 +117,24 @@ impl DefaultArchiveReader {
         let mut entries = Vec::with_capacity(image_indices.len());
         for i in image_indices {
             let entry = zip.by_index(i)?;
-                // zip::DateTime (Option) から UNIX タイムへの簡易変換（Chrono 依存を排除）
-                let t_opt = entry.last_modified();
-                let mtime = if let Some(t) = t_opt {
-                    if t.year() >= 1980 {
-                        let years = (t.year() as u64).saturating_sub(1970);
-                        let months = t.month() as u64;
-                        let days = t.day() as u64;
-                        // 相対的なソート順序を維持するための概算計算
-                        (years * 31536000) + (months * 2592000) + (days * 86400)
-                    } else { 0 }
-                } else { 0 };
+            // zip::DateTime (Option) から UNIX タイムへの簡易変換（Chrono 依存を排除）
+            let t_opt = entry.last_modified();
+            let mtime = if let Some(t) = t_opt {
+                if t.year() >= 1980 {
+                    let years = (t.year() as u64).saturating_sub(1970);
+                    let months = t.month() as u64;
+                    let days = t.day() as u64;
+                    // 相対的なソート順序を維持するための概算計算
+                    (years * 31536000) + (months * 2592000) + (days * 86400)
+                } else { 0 }
+            } else { 0 };
 
-                entries.push(ImageEntry {
-                    name: entry.name().to_string(), // 画像確定後のみ String を作成
-                    mtime,
-                    size: entry.size(),
-                    archive_index: i,
-                });
+            entries.push(ImageEntry {
+                name: entry.name().to_string(), // 画像確定後のみ String を作成
+                mtime,
+                size: entry.size(),
+                archive_index: i,
+            });
         }
         Ok(entries)
     }

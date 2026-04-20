@@ -45,17 +45,12 @@ pub fn draw_centered(
     mode: DisplayMode,
     zoom: f32,
 ) -> egui::Response {
-    let display_size = match mode {
-        DisplayMode::Fit => {
-            let scale = (avail.x / tex_size.x).min(avail.y / tex_size.y).min(1.0);
-            tex_size * scale * zoom
-        }
-        DisplayMode::WindowFit => {
-            let scale = (avail.x / tex_size.x).min(avail.y / tex_size.y);
-            tex_size * scale * zoom
-        }
-        DisplayMode::Manual => tex_size * zoom,
+    let scale = match mode {
+        DisplayMode::Fit => (avail.x / tex_size.x).min(avail.y / tex_size.y).min(1.0) * zoom,
+        DisplayMode::WindowFit => (avail.x / tex_size.x).min(avail.y / tex_size.y) * zoom,
+        DisplayMode::Manual => zoom,
     };
+    let display_size = tex_size * scale;
     let area = egui::vec2(display_size.x.max(avail.x), display_size.y.max(avail.y));
     let off  = egui::vec2(((area.x - display_size.x)*0.5).max(0.0), ((area.y - display_size.y)*0.5).max(0.0));
     let (rect, resp) = ui.allocate_exact_size(area, egui::Sense::drag());
@@ -81,7 +76,9 @@ pub fn draw_main_area(
     manga_rtl: bool,
     ctx: &egui::Context,
     is_at_end: bool,
-) -> (Response, Option<ViewerAction>) {
+    secondary_down: bool,
+    pending_scroll: Option<egui::Vec2>,
+) -> (Response, Option<ViewerAction>, f32, egui::Vec2, egui::Pos2) {
     let mode       = view.display_mode;
     let zoom       = view.zoom;
     let manga_mode = view.manga_mode;
@@ -92,21 +89,34 @@ pub fn draw_main_area(
     // 1枚目の取得
     let tex1_data = manager.get_tex(manager.current, ctx.input(|i| i.time));
     let (tex1, tex1_size) = match tex1_data {
-        Some((t, _)) => (t, t.size_vec2()),
-        None => return (ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()), None),
+        Some((t, next)) => {
+            if let Some(secs) = next {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(secs));
+            }
+            (t, t.size_vec2())
+        }
+        None => return (ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()), None, 1.0, egui::Vec2::ZERO, egui::Pos2::ZERO),
     };
 
     // 2枚目のペアリング判定
     let can_pair = (manga_shift || manager.current > 0) && tex1_size.x <= tex1_size.y;
     let tex2_data = if manga_mode && can_pair {
-        manager.get_tex(manager.current + 1, ctx.input(|i| i.time)).and_then(|(t, _)| {
+        manager.get_tex(manager.current + 1, ctx.input(|i| i.time)).and_then(|(t, next)| {
+            if let Some(secs) = next {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(secs));
+            }
             if t.size_vec2().x <= t.size_vec2().y { Some((t, t.size_vec2())) } else { None }
         })
     } else {
         None
     };
 
-    let resp = ScrollArea::both().show(ui, |ui| {
+    let mut sa = ScrollArea::both().enable_scrolling(!secondary_down);
+    if let Some(offset) = pending_scroll {
+        sa = sa.scroll_offset(offset);
+    }
+    let output = sa.show(ui, |ui| {
+        let current_eff;
         if manga_mode {
             if let Some((tex2, tex2_size)) = tex2_data {
                 // 2枚並べ計算
@@ -121,6 +131,7 @@ pub fn draw_main_area(
                     DisplayMode::WindowFit => (half.x/tex2_size.x).min(half.y/tex2_size.y) * zoom,
                     DisplayMode::Manual => zoom,
                 };
+                current_eff = s1.min(s2);
                 let ds1 = tex1_size * s1;
                 let ds2 = tex2_size * s2;
                 let total_w = (ds1.x + ds2.x).max(avail.x);
@@ -153,11 +164,16 @@ pub fn draw_main_area(
                         }
                     });
                 }
-                return resp;
+                return (resp, current_eff);
             }
         }
         
         // 1枚のみ（または2枚目ロード中）
+        current_eff = match mode {
+            DisplayMode::Fit => (avail.x / tex1_size.x).min(avail.y / tex1_size.y).min(1.0) * zoom,
+            DisplayMode::WindowFit => (avail.x / tex1_size.x).min(avail.y / tex1_size.y) * zoom,
+            DisplayMode::Manual => zoom,
+        };
         let r = draw_centered(ui, tex1.id(), tex1_size, avail, mode, zoom);
         if is_at_end {
             ui.add_space(20.0);
@@ -167,8 +183,11 @@ pub fn draw_main_area(
                 }
             });
         }
-        r
-    }).inner;
+        (r, current_eff)
+    });
+    let (resp, calculated_zoom) = output.inner;
+    let scroll_off = output.state.offset;
+    let vp_origin  = output.inner_rect.min;
 
-    (resp, action)
+    (resp, action, calculated_zoom, scroll_off, vp_origin)
 }

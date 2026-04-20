@@ -4,9 +4,9 @@ mod sidebar;
 mod toolbar;
 
 pub use dialogs::{about_window, debug_window, key_config_window, settings_window, sort_settings_window, limiter_settings_window};
-pub use menu::main_menu_bar;
+pub use menu::{main_menu_bar, main_menu_bar_inner};
 pub use sidebar::sidebar_ui;
-pub use toolbar::bottom_toolbar;
+pub use toolbar::{bottom_toolbar, bottom_toolbar_inner};
 
 use crate::config;
 use crate::types::DisplayMode;
@@ -55,6 +55,9 @@ pub enum ViewerAction {
     OpenLimiterSettings,
     SetLimiterPageDuration(f32),
     SetLimiterFolderDuration(f32),
+    ToggleFullscreen,
+    ToggleBorderless,
+    ToggleSmallBorderless,
 }
 
 /// キーコンフィグ画面やマウスボタン設定で表示するアクション名の日本語訳
@@ -70,8 +73,9 @@ pub(crate) fn get_action_label(id: &str) -> &str {
         "Down"             => "下 (移動/ツリー操作)",
         "Enter"            => "決定 (ツリー選択/ダイアログ)",
         "OpenKeyConfig"    => "キーコンフィグ画面を開く",
-        "ToggleFullscreen" => "全画面表示の切替",
-        "ToggleBorderless" => "ボーダレス全画面の切替",
+        "ToggleFullscreen" => "最大化 (タイトルあり)",
+        "ToggleBorderless" => "全画面ボーダレス (タイトルなし)",
+        "ToggleSmallBorderless" => "小画面ボーダレス",
         "Escape"           => "閉じる/解除/終了",
         "ToggleTree"       => "ディレクトリツリーの表示切替",
         "ToggleFit"        => "画像フィットモードの切替",

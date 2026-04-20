@@ -1,4 +1,4 @@
-use eframe::egui::{self, Button, Layout, Align, Slider, TopBottomPanel};
+use eframe::egui::{self, Button, Layout, Align, Slider};
 use crate::config::{self, SortMode, SortOrder, FilterMode};
 use crate::manager::Manager;
 use crate::types::{DisplayMode, ViewState};
@@ -12,16 +12,26 @@ pub fn bottom_toolbar(
     view: &ViewState,
     is_nav_locked: bool,
 ) -> Option<ViewerAction> {
-    let mut action = None;
-    
     // ウィンドウ最下部に固定され、横幅いっぱいに広がるパネル
     egui::TopBottomPanel::bottom("status_bar")
         .resizable(false)
         .min_height(22.0)
         .show(ctx, |ui| {
-            ui.add_space(1.0);
-        ui.horizontal(|ui| {
-            let has = !manager.entries.is_empty();
+            bottom_toolbar_inner(ui, manager, config, view, is_nav_locked)
+        }).inner
+}
+
+pub fn bottom_toolbar_inner(
+    ui: &mut egui::Ui,
+    manager: &Manager,
+    config: &config::Config,
+    view: &ViewState,
+    is_nav_locked: bool,
+) -> Option<ViewerAction> {
+    let mut action = None;
+    ui.add_space(1.0);
+    ui.horizontal(|ui| {
+        let has = !manager.entries.is_empty();
             let accent = ui.visuals().selection.bg_fill;
 
             let mut left_btn = Button::new("<");
@@ -76,11 +86,11 @@ pub fn bottom_toolbar(
                 };
                 let sort = format!("{} {}",
                     match config.sort_mode {
-                        SortMode::Name  => "Name",
-                        SortMode::Mtime => "Day",
-                        SortMode::Size  => "Size",
+                        SortMode::Name  => "名前",
+                        SortMode::Mtime => "日付",
+                        SortMode::Size  => "サイズ",
                     },
-                    if config.sort_order == SortOrder::Ascending { "Asc" } else { "Desc" }
+                    if config.sort_order == SortOrder::Ascending { "▲" } else { "▼" }
                 );
                 let filter = match config.filter_mode {
                     FilterMode::Nearest  => "Nearest",
@@ -90,22 +100,25 @@ pub fn bottom_toolbar(
                 };
 
                 ui.separator();
-                ui.label(format!("{} | {} | {} | {} | [{}] | {}", name, size, res, date, sort, filter));
+                // 左寄せ: ファイル名 | ファイルサイズ | 解像度 | 更新日 | ソート
+                ui.label(format!("{} | {} | {} | {} | {}", name, size, res, date, sort));
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let zoom_pct = format!("({:.0}%)", view.zoom * 100.0);
-                    let label = match view.display_mode {
-                        DisplayMode::Fit => if view.zoom == 1.0 { "Fit".to_string() } else { format!("Fit {}", zoom_pct) },
-                        DisplayMode::WindowFit => if view.zoom == 1.0 { "WinFit".to_string() } else { format!("WinFit {}", zoom_pct) },
-                        DisplayMode::Manual => if (view.zoom - 1.0).abs() < 0.001 { "等倍".to_string() } else { zoom_pct },
+                    // 右寄せ: Image補正 | <Fit(xXXX)>
+                    let zoom_pct = format!("{:.0}%", view.effective_zoom * 100.0);
+                    let mode_label = match view.display_mode {
+                        DisplayMode::Fit => format!("Fit({})", zoom_pct),
+                        DisplayMode::WindowFit => format!("WinFit({})", zoom_pct),
+                        DisplayMode::Manual => zoom_pct,
                     };
-                    ui.label(label);
+                    ui.label(mode_label);
+                    ui.separator();
+                    ui.label(filter);
                 });
             } else {
                 ui.label("待機中...");
             }
         });
-            ui.add_space(1.0);
-    });
+    ui.add_space(1.0);
     action
 }

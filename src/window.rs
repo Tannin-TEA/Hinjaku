@@ -3,43 +3,47 @@ use crate::config::Config;
 
 /// ウィンドウをワークエリア（タスクバー除外）の中央に配置する
 /// Windows上は純粋なWindows APIで完結させ、座標系の不一致を回避する
-pub fn move_to_center(_ctx: &egui::Context, _inner_width: f32, _inner_height: f32) {
+pub fn move_to_center(_ctx: &egui::Context, _inner_width: f32, _inner_height: f32) -> bool {
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             SystemParametersInfoW, SPI_GETWORKAREA,
-            EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+            EnumWindows, GetWindowThreadProcessId,
             GetWindowRect, SetWindowPos, SWP_NOSIZE, SWP_NOZORDER,
         };
         use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
         use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
-        // 自プロセスの表示中ウィンドウを列挙して取得
+        // 自プロセスのトップレベルウィンドウを列挙して取得
+        // IsWindowVisible は起動直後falseになることがあるため、サイズで判定する
         struct Search { hwnd: HWND, pid: u32 }
         unsafe extern "system" fn find_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
             let s = &mut *(lparam as *mut Search);
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == s.pid && IsWindowVisible(hwnd) != 0 {
-                s.hwnd = hwnd;
-                return 0; // 発見、列挙終了
+            if pid == s.pid {
+                let mut r: RECT = std::mem::zeroed();
+                if GetWindowRect(hwnd, &mut r) != 0 && (r.right - r.left) > 10 && (r.bottom - r.top) > 10 {
+                    s.hwnd = hwnd;
+                    return 0; // 発見、列挙終了
+                }
             }
             1 // 続行
         }
 
         let mut search = Search { hwnd: std::ptr::null_mut(), pid: GetCurrentProcessId() };
         EnumWindows(Some(find_proc), &mut search as *mut _ as LPARAM);
-        if search.hwnd.is_null() { return; }
+        if search.hwnd.is_null() { return false; }
 
         // 実際のウィンドウ外寸を取得（タイトルバー・枠込み）
         let mut win_rect: RECT = std::mem::zeroed();
-        if GetWindowRect(search.hwnd, &mut win_rect) == 0 { return; }
+        if GetWindowRect(search.hwnd, &mut win_rect) == 0 { return false; }
         let win_w = win_rect.right  - win_rect.left;
         let win_h = win_rect.bottom - win_rect.top;
 
         // タスクバーを除いたワークエリアを取得
         let mut work: RECT = std::mem::zeroed();
-        if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut _ as _, 0) == 0 { return; }
+        if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut _ as _, 0) == 0 { return false; }
         let work_w = work.right  - work.left;
         let work_h = work.bottom - work.top;
 
@@ -48,6 +52,7 @@ pub fn move_to_center(_ctx: &egui::Context, _inner_width: f32, _inner_height: f3
 
         // すべて同一のWindows座標系で計算しているため変換不要
         SetWindowPos(search.hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+        return true;
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -59,6 +64,7 @@ pub fn move_to_center(_ctx: &egui::Context, _inner_width: f32, _inner_height: f3
             wx + (ww - ow) / 2.0,
             wy + (wh - oh) / 2.0,
         )));
+        return true;
     }
 }
 
@@ -78,10 +84,13 @@ pub fn sync_config_with_window(ctx: &egui::Context, config: &mut Config, last_re
 
     // 通常状態（最大化・最小化・フルスクリーンではない）の時のみ、座標とサイズを記録する
     // 手動リサイズ直後（0.5秒間）は干渉防止のため記録をスキップ
+    // 中央配置がONの場合は位置を保存しない（次回起動時に再度中央配置するため）
     if !maximized && !minimized && !fullscreen && (last_resize_time == 0.0 || now - last_resize_time > 0.5) {
-        if let Some(rect) = viewport_info.outer_rect {
-            config.window_x = rect.min.x;
-            config.window_y = rect.min.y;
+        if !config.window_centered {
+            if let Some(rect) = viewport_info.outer_rect {
+                config.window_x = rect.min.x;
+                config.window_y = rect.min.y;
+            }
         }
         if let Some(rect) = viewport_info.inner_rect {
             if rect.width() > 10.0 && rect.height() > 10.0 {
