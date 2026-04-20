@@ -108,6 +108,7 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
     }
     ui.separator();
     ui.menu_button("画像の補正 (I)", |ui| {
+        ui.set_min_width(200.0);
         for (m, label) in [
             (FilterMode::Nearest,  "なし (Nearest)"),
             (FilterMode::Bilinear, "バイリニア (線形)"),
@@ -120,6 +121,10 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
         }
     });
     ui.menu_button("PDF品質", |ui| {
+<<<<<<< HEAD
+        ui.set_min_width(120.0);
+=======
+>>>>>>> ea3fb89eaa5249526ec463952c454f504405ee1c
         for s in [720, 1080, 1440, 1920, 2880] {
             if ui.selectable_label(config.pdf_render_size == s, format!("{}px", s)).clicked() {
                 ui.close_menu(); action = Some(ViewerAction::SetPdfRenderSize(s));
@@ -131,8 +136,12 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
     }
 
     ui.menu_button("ウィンドウサイズ", |ui| {
+        ui.set_min_width(220.0);
         for (w, h, label) in [(640, 480, "VGA"), (800, 600, "SVGA"), (1024, 768, "XGA"), (1280, 960, "Quad-VGA"), (1400, 1050, "SXGA+"), (1600, 1200, "UXGA")] {
-            if ui.button(label).clicked() { ui.close_menu(); action = Some(ViewerAction::ResizeWindow(w, h)); }
+            if ui.button(format!("{} ({}x{})", label, w, h)).clicked() {
+                ui.close_menu();
+                action = Some(ViewerAction::ResizeWindow(w, h));
+            }
         }
         ui.separator();
         if ui.selectable_label(!config.window_resizable, "ウィンドロック").clicked() {
@@ -147,6 +156,7 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
     if ui.button("左回転 (Ctrl+R)").clicked() { ui.close_menu(); action = Some(ViewerAction::Rotate(false)); }
     ui.separator();
     ui.menu_button("背景色", |ui| {
+        ui.set_min_width(150.0);
         for (m, label) in [(BackgroundMode::Theme, "既定"), (BackgroundMode::Checkerboard, "市松模様"), (BackgroundMode::Black, "黒"), (BackgroundMode::Gray, "グレー"), (BackgroundMode::White, "白"), (BackgroundMode::Green, "緑")] {
             if ui.button(label).clicked() { ui.close_menu(); action = Some(ViewerAction::SetBgMode(m)); }
         }

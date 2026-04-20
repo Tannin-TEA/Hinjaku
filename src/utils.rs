@@ -149,6 +149,21 @@ pub fn format_timestamp(secs: u64) -> String {
     format!("{:04}/{:02}/{:02}", year, month.min(12), day.min(31))
 }
 
+/// 秒（UNIXタイム）を yyyymmdd 形式で返す（イースターエッグ用）
+pub fn format_date_compact(secs: u64) -> String {
+    if secs == 0 { return "00000000".to_string(); }
+    let days = secs / 86400;
+    let mut year = 1970u32;
+    let mut d = days;
+    while d >= if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 } {
+        d -= if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
+        year += 1;
+    }
+    let month = (d / 31 + 1).min(12);
+    let day   = (d % 31 + 1).min(31);
+    format!("{:04}{:02}{:02}", year, month, day)
+}
+
 // ── 自然順ソート ─────────────────────────────────────────────────────────────
 
 pub fn natord(a: &str, b: &str) -> std::cmp::Ordering {

@@ -18,6 +18,7 @@ struct UiState {
     capturing_key_for:  Option<String>,
     sort_focus_idx:     usize,
     settings_args_tmp:  Vec<String>,
+    boss_mode:          bool,
 }
 
 impl UiState {
@@ -34,6 +35,7 @@ impl UiState {
             capturing_key_for:  None,
             sort_focus_idx:     0,
             settings_args_tmp:  config.external_apps.iter().map(|a| a.args.join(" ")).collect(),
+            boss_mode:          false,
         }
     }
 }
@@ -232,6 +234,7 @@ impl App {
     /// 過去に last_target_index を条件に加えたことでループが発生した経緯がある (0.1.2)。
     /// 条件を追加・変更する前にユーザーへ確認すること。
     fn update_title(&mut self, ctx: &egui::Context) {
+        if self.ui.boss_mode { return; } // boss_mode 中は上書きしない
         let now = ctx.input(|i| i.time);
         // アーカイブが変わった、または2秒経過（メモリ更新用）のいずれかで更新
         if self.manager.archive_path == self.last_archive_path && now - self.last_title_update_time <= 2.0 { return; }
@@ -467,6 +470,25 @@ impl App {
             self.handle_mouse_input(ctx);
         }
         if !modal_open && k.esc { self.exit_fullscreen(ctx); }
+
+        // イースターエッグ: Ctrl+Shift+F12 固定（キーコンフィグ非公開）
+        if ctx.input(|i| i.key_pressed(egui::Key::F12) && i.modifiers.ctrl && i.modifiers.shift) {
+            self.ui.boss_mode = !self.ui.boss_mode;
+            if self.ui.boss_mode {
+                let renderer_str = match self.config.renderer {
+                    config::RendererMode::Glow => "OpenGL",
+                    config::RendererMode::Wgpu => "Wgpu",
+                };
+                let config_part = self.config_path.as_ref()
+                    .and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
+                    .filter(|n| n != "config.ini").map(|n| format!(" {{{}}}", n)).unwrap_or_default();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+                    format!("Hinjaku - {}{} [Image-Folder] ({})", renderer_str, config_part, integrator::get_memory_usage_str())
+                ));
+            } else {
+                self.last_title_update_time = 0.0; // 次フレームで本来のタイトルに戻す
+            }
+        }
     }
 
     fn handle_tree_navigation(&mut self, ctx: &egui::Context, k: &input::KeyboardState) {
@@ -701,6 +723,8 @@ impl App {
     fn draw_ui(&mut self, ctx: &egui::Context) {
         self.draw_windows(ctx);
         let menu_act = widgets::main_menu_bar(ctx, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
+        // ステータスバーをツリーより先に宣言することで、ウィンドウ全幅を確保する
+        let tool_act = widgets::bottom_toolbar(ctx, &self.manager, &self.config, &self.view, self.is_nav_locked(ctx));
         let mut tree_req = None;
         if self.ui.show_tree {
             egui::SidePanel::left("tree")
@@ -710,11 +734,19 @@ impl App {
                 .show(ctx, |ui| widgets::sidebar_ui(ui, &mut self.manager.tree, &self.manager.archive_path, ctx, &mut tree_req));
             self.manager.tree.scroll_to_selected = false;
         }
-        let tool_act = widgets::bottom_toolbar(ctx, &self.manager, &self.config, &self.view, self.is_nav_locked(ctx));
         if let Some(act) = menu_act.or(tool_act) { self.handle_action(ctx, act); }
         if let Some(p) = tree_req { self.open_path(p, ctx); }
 
+<<<<<<< HEAD
+        if !self.ui.boss_mode {
+            self.draw_main_panel(ctx);
+        } else {
+            egui::CentralPanel::default().show(ctx, |_ui| {});
+            self.draw_boss_mode(ctx);
+        }
+=======
         self.draw_main_panel(ctx);
+>>>>>>> ea3fb89eaa5249526ec463952c454f504405ee1c
         self.toasts.draw(ctx);
     }
 
@@ -847,6 +879,36 @@ impl App {
                 ui.label("読み込み中...");
             }
         });
+    }
+
+    fn draw_boss_mode(&mut self, ctx: &egui::Context) {
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("boss_mode"))
+            .order(egui::Order::TOP)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                // 全画面を半透明の黒で塗りつぶす
+                let painter = ui.painter();
+                painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(200));
+
+                // 中央にスピナーとテキスト
+                let center = screen.center();
+                ui.allocate_ui_at_rect(
+                    egui::Rect::from_center_size(center, egui::vec2(200.0, 80.0)),
+                    |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add(egui::Spinner::new().size(40.0).color(egui::Color32::WHITE));
+                            ui.add_space(12.0);
+                            ui.label(egui::RichText::new("ロード中...").size(18.0).color(egui::Color32::WHITE).strong());
+                        });
+                    },
+                );
+
+                // クリックで解除
+                let resp = ui.allocate_rect(screen, egui::Sense::click());
+                if resp.clicked() { self.ui.boss_mode = false; }
+            });
+        ctx.request_repaint(); // スピナーのアニメーションを維持
     }
 
     // ── アクションディスパッチ ────────────────────────────────────────────────
