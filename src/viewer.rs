@@ -997,7 +997,7 @@ impl App {
             }
         }
         if self.ui.show_debug { widgets::debug_window(ctx, &mut self.ui.show_debug, &self.manager); }
-        if self.ui.show_about { widgets::about_window(ctx, &mut self.ui.show_about); }
+        if self.ui.show_about { widgets::dialogs::about_window(ctx, &mut self.ui.show_about); }
         if self.ui.show_jump_dialog {
             let total = self.manager.entries.len();
             let mut jumped = false;

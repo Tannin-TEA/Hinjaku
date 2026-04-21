@@ -1,55 +1,52 @@
-mod dialogs;
-mod menu;
-mod sidebar;
-mod toolbar;
+use eframe::egui;
 
-pub use dialogs::{about_window, debug_window, key_config_window, settings_window, sort_settings_window, limiter_settings_window};
-pub use menu::{main_menu_bar, main_menu_bar_inner};
-pub use sidebar::sidebar_ui;
-pub use toolbar::{bottom_toolbar, bottom_toolbar_inner};
+pub mod menu;
+pub mod toolbar;
+pub mod sidebar;
+pub mod dialogs;
 
-use crate::config;
-use crate::types::DisplayMode;
+pub use menu::*;
+pub use toolbar::*;
+pub use sidebar::*;
+pub use dialogs::*;
 
-/// ユーザーがUI操作を通じて要求したアクション
-#[allow(dead_code)]
+/// アプリケーション全体で発生するアクション
+#[derive(Clone, Debug, PartialEq)]
 pub enum ViewerAction {
+    About,
+    ToggleLimiterMode,
+    NextDir,
+    PrevPage,
+    NextPage,
+    GoPrevDir,
+    GoNextDir,
+    Seek(usize),
+    SetOpenFromEnd(bool),
+    SetDisplayMode(crate::config::DisplayMode),
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    ToggleManga,
+    ToggleMangaRtl,
+    ToggleLinear,
+    Rotate(bool),
+    SetBgMode(crate::config::BackgroundMode),
+    ToggleAlwaysOnTop,
+    ToggleWindowResizable,
+    ToggleWindowCentered,
+    ResizeWindow(u32, u32),
+    MoveToCenter,
     OpenRecent(String),
     OpenFolder,
     RevealInExplorer,
     OpenExternal(usize),
     OpenExternalSettings,
     OpenKeyConfig,
-    Exit,
-    SetDisplayMode(DisplayMode),
-    ZoomIn,
-    ZoomOut,
-    ZoomReset,
-    ToggleManga,
-    ToggleMangaRtl,
-    ToggleTree,
     OpenSortSettings,
-    ToggleAlwaysOnTop,
     ToggleMultipleInstances,
-    ToggleLinear,
-    Rotate(bool), // true = CW, false = CCW
-    GoPrevDir,
-    GoNextDir,
-    SetOpenFromEnd(bool),
-    SetBgMode(config::BackgroundMode),
-    PrevPage,
-    NextPage,
-    NextDir,
-    Seek(usize),
     ToggleDebug,
-    SetRenderer(config::RendererMode),
-    ToggleWindowResizable,
-    MoveToCenter,
-    ToggleWindowCentered,
-    ResizeWindow(u32, u32),
-    About,
-    SetMouseAction(u8, String),
-    ToggleLimiterMode,
+    SetRenderer(crate::config::RendererMode),
+    SetMouseAction(usize, String),
     SetPdfRenderSize(u32),
     TogglePdfWarning,
     OpenLimiterSettings,
@@ -58,55 +55,27 @@ pub enum ViewerAction {
     ToggleFullscreen,
     ToggleBorderless,
     ToggleSmallBorderless,
+    Exit,
+    ToggleTree,
 }
 
-/// キーコンフィグ画面やマウスボタン設定で表示するアクション名の日本語訳
-pub(crate) fn get_action_label(id: &str) -> &str {
+
+/// アクションIDに対応する日本語ラベルを返す（キーコンフィグ画面等で使用）
+pub fn get_action_label(id: &str) -> &str {
     match id {
-        "PrevPage"         => "前のページを表示",
-        "NextPage"         => "次のページを表示",
-        "PrevPageSingle"   => "前のページを表示 (1枚送り)",
-        "NextPageSingle"   => "次のページを表示 (1枚送り)",
-        "Left"             => "左 (移動/ツリー操作)",
-        "Right"            => "右 (移動/ツリー操作)",
-        "Up"               => "上 (移動/ツリー操作)",
-        "Down"             => "下 (移動/ツリー操作)",
-        "Enter"            => "決定 (ツリー選択/ダイアログ)",
-        "OpenKeyConfig"    => "キーコンフィグ画面を開く",
-        "ToggleFullscreen" => "最大化 (タイトルあり)",
-        "ToggleBorderless" => "全画面ボーダレス (タイトルなし)",
-        "ToggleSmallBorderless" => "小画面ボーダレス",
-        "Escape"           => "閉じる/解除/終了",
-        "ToggleTree"       => "ディレクトリツリーの表示切替",
-        "ToggleFit"        => "画像フィットモードの切替",
-        "ZoomIn"           => "拡大",
-        "ZoomOut"          => "縮小",
-        "ZoomReset"        => "ズームをリセット",
-        "ToggleManga"      => "マンガモード(見開き)の切替",
-        "RotateCW"         => "画像を右に回転",
-        "RotateCCW"        => "画像を左に回転",
-        "PrevDir"          => "前のフォルダ/アーカイブへ",
-        "NextDir"          => "次のフォルダ/アーカイブへ",
-        "SortSettings"     => "ソート設定ウィンドウを開く",
-        "FirstPage"        => "最初のページへ移動",
-        "LastPage"         => "最後のページへ移動",
-        "RevealExplorer"   => "エクスプローラーで表示",
-        "OpenExternal1"    => "外部アプリ1で開く",
-        "OpenExternal2"    => "外部アプリ2で開く",
-        "OpenExternal3"    => "外部アプリ3で開く",
-        "OpenExternal4"    => "外部アプリ4で開く",
-        "OpenExternal5"    => "外部アプリ5で開く",
-        "OpenExternal6"    => "外部アプリ6で開く",
-        "OpenExternal7"    => "外部アプリ7で開く",
-        "OpenExternal8"    => "外部アプリ8で開く",
-        "OpenExternal9"    => "外部アプリ9で開く",
-        "ToggleLinear"     => "画像補正(スムージング)の切替",
-        "ToggleMangaRtl"   => "右開き/左開きの切替",
-        "Quit"             => "アプリを終了",
-        "ToggleBg"         => "背景色の切替",
-        "ToggleDebug"      => "デバッグ情報の表示切替",
-        "JumpPage"         => "指定ページへジャンプ",
-        "None"             => "（なし）",
-        _                  => id,
+        "PrevPage" => "前のページ",
+        "NextPage" => "次のページ",
+        "PrevPageSingle" => "前のページ (単一)",
+        "NextPageSingle" => "次のページ (単一)",
+        "PrevDir" => "前のフォルダ",
+        "NextDir" => "次のフォルダ",
+        "ToggleFit" => "フィット表示切替",
+        "ToggleManga" => "マンガモード切替",
+        "ToggleTree" => "ツリー表示切替",
+        "ZoomIn" => "拡大",
+        "ZoomOut" => "縮小",
+        "RotateCW" => "右回転",
+        "None" => "なし",
+        _ => id,
     }
 }

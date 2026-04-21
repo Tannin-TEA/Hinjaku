@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, ScrollArea, Response, RichText};
+use eframe::egui::{self, Color32, ScrollArea, Response};
 use crate::config;
 use crate::manager::Manager;
 use crate::types::{DisplayMode, ViewState};
@@ -75,7 +75,7 @@ pub fn draw_main_area(
     view: &ViewState,
     manga_rtl: bool,
     ctx: &egui::Context,
-    is_at_end: bool,
+    _is_at_end: bool,
     secondary_down: bool,
     pending_scroll: Option<egui::Vec2>,
 ) -> (Response, Option<ViewerAction>, f32, egui::Vec2, egui::Pos2) {
@@ -84,7 +84,7 @@ pub fn draw_main_area(
     let manga_mode = view.manga_mode;
     let manga_shift = view.manga_shift;
     let avail = ui.available_size();
-    let mut action = None;
+    let action = None;
     
     // 1枚目の取得
     let tex1_data = manager.get_tex(manager.current, ctx.input(|i| i.time));
