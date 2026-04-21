@@ -7,7 +7,6 @@ pub fn is_image_ext(name: &str) -> bool {
     ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") ||
     ext.eq_ignore_ascii_case("png") || ext.eq_ignore_ascii_case("webp") ||
     ext.eq_ignore_ascii_case("gif") || ext.eq_ignore_ascii_case("bmp") ||
-    ext.eq_ignore_ascii_case("tiff") || ext.eq_ignore_ascii_case("tif") ||
     ext.eq_ignore_ascii_case("avif")
 }
 
