@@ -3,6 +3,7 @@
 *.pdb
 hinjaku_debug.log
 
+
 # 今回追加するファイル
 /.history
 /.claude
