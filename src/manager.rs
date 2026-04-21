@@ -187,9 +187,13 @@ impl Manager {
                 }
                 let (_, ref mut zip) = zip_cache.as_mut().ok_or("Cache error")?;
                 let mut entry = zip.by_index(idx).map_err(|e| e.to_string())?;
-                // サイズが既知なので、事前に確保して read_to_end を使う方が効率的
                 let mut buf = Vec::with_capacity(entry.size() as usize);
-                entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+                if let Err(e) = entry.read_to_end(&mut buf) {
+                    // CRC不一致はデータ自体は読めているので続行、それ以外はエラー
+                    if !e.to_string().contains("Invalid checksum") || buf.is_empty() {
+                        return Err(e.to_string());
+                    }
+                }
                 buf
             } else if matches!(kind, utils::ArchiveKind::Pdf) {
                 if zip_cache.is_some() { *zip_cache = None; }
@@ -241,7 +245,7 @@ impl Manager {
                         let delay_ms = if delay_ms < loading::MIN_ANIM_FRAME_DELAY_MS { loading::DEFAULT_ANIM_FRAME_DELAY_MS } else { delay_ms };
 
                         let img = frame.into_buffer();
-                        let img = downscale_if_needed(img, image::MAX_TEX_DIM, req.filter_mode);
+                        let img = downscale_if_needed(img, req.max_dim, req.filter_mode);
                         let img = apply_rotation(img, req.rotation);
                         result_frames.push(FrameData { image: img, delay_ms });
                     }
@@ -253,12 +257,10 @@ impl Manager {
 
         let img = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8();
 
-        // PDFは既に pdf_handler 側で要求サイズ (req.max_dim) にレンダリングされているため、
-        // ここで再度リサイズを走らせるのはCPUの無駄。PDF以外のみ定数 1920 を上限としてリサイズを行う。
         let img = if kind == utils::ArchiveKind::Pdf {
             img
         } else {
-            downscale_if_needed(img, image::MAX_TEX_DIM, req.filter_mode)
+            downscale_if_needed(img, req.max_dim, req.filter_mode)
         };
         let img = apply_rotation(img, req.rotation);
         

@@ -62,6 +62,7 @@ pub struct App {
     path_rx:              Receiver<PathBuf>,
     applied_initial_center: bool,
     initial_center_frame:  u8,
+    pro_mode:             bool,
     is_mouse_gesture:     bool,
     scroll_offset:        egui::Vec2,
     viewport_origin:      egui::Pos2,
@@ -77,6 +78,7 @@ impl App {
         archive_reader: std::sync::Arc<dyn archive::ArchiveReader>,
         window_title: &str,
         debug_cli: bool,
+        pro_mode: bool,
     ) -> Self {
         // 日本語フォント
         let mut fonts = FontDefinitions::default();
@@ -145,6 +147,7 @@ impl App {
             path_rx:                integrator::install_message_hook(&cc.egui_ctx, window_title),
             applied_initial_center: false,
             initial_center_frame:   0,
+            pro_mode,
             config,
             is_mouse_gesture:       false,
             scroll_offset:          egui::Vec2::ZERO,
@@ -192,17 +195,16 @@ impl App {
         ctx.request_repaint();
     }
 
-    /// 現在の表示環境と設定に基づいた「最適な読み込み上限サイズ」を計算する
+    fn get_effective_filter_mode(&self) -> config::FilterMode {
+        if self.pro_mode { config::FilterMode::Nearest } else { self.config.filter_mode }
+    }
+
     fn get_effective_max_dim(&self, ctx: &egui::Context) -> u32 {
         let kind = self.manager.archive_path.as_ref().map(|p| utils::detect_kind(p)).unwrap_or(utils::ArchiveKind::Plain);
         if kind == utils::ArchiveKind::Pdf {
             self.config.pdf_render_size
         } else {
-            // モニターの物理解像度を取得
-            let ppp = ctx.pixels_per_point();
-            let screen = ctx.screen_rect();
-            let monitor_res = (screen.width() * ppp).max(screen.height() * ppp) as u32;
-            monitor_res.clamp(1920, image::MAX_TEX_DIM) // 最小1920、最大4K
+            u32::MAX
         }
     }
 
@@ -220,7 +222,7 @@ impl App {
             }
         }
         let max_dim = self.get_effective_max_dim(ctx);
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
+        self.manager.schedule_prefetch(self.get_effective_filter_mode(), self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -289,15 +291,16 @@ impl App {
             config::RendererMode::Glow => "OpenGL",
             config::RendererMode::Wgpu => "Wgpu",
         };
+        let pro_part = if self.pro_mode { "ProMode - " } else { "" };
         let config_part = self.config_path.as_ref()
             .and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
             .filter(|n| n != "config.ini").map(|n| format!(" {{{}}}", n)).unwrap_or_default();
-        
+
         let container_name = self.manager.archive_path.as_ref()
             .map(|p| format!(" [{}]", utils::get_display_name(p))).unwrap_or_default();
 
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-            format!("Hinjaku - {}{}{} ({})", renderer_str, config_part, container_name, integrator::get_memory_usage_str())
+            format!("Hinjaku - {}{}{}{} ({})", pro_part, renderer_str, config_part, container_name, integrator::get_memory_usage_str())
         ));
     }
 
@@ -319,7 +322,7 @@ impl App {
     fn go_single_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_prev(false, false, self.config.filter_mode, self.config.pdf_render_size) {
+        if !self.manager.go_prev(false, false, self.get_effective_filter_mode(), self.config.pdf_render_size) {
             if self.config.limiter_mode && self.config.limiter_stop_at_start { return; }
             self.go_prev_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -328,7 +331,7 @@ impl App {
     fn go_single_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_next(false, false, self.config.filter_mode, self.config.pdf_render_size) {
+        if !self.manager.go_next(false, false, self.get_effective_filter_mode(), self.config.pdf_render_size) {
             if self.config.limiter_mode && self.config.limiter_stop_at_end { return; }
             self.go_next_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -337,7 +340,7 @@ impl App {
     fn go_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_prev(self.view.manga_mode, self.view.manga_shift, self.config.filter_mode, self.config.pdf_render_size) {
+        if !self.manager.go_prev(self.view.manga_mode, self.view.manga_shift, self.get_effective_filter_mode(), self.config.pdf_render_size) {
             if self.config.limiter_mode && self.config.limiter_stop_at_start { return; }
             self.go_prev_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -346,7 +349,7 @@ impl App {
     fn go_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_next(self.view.manga_mode, self.view.manga_shift, self.config.filter_mode, self.config.pdf_render_size) {
+        if !self.manager.go_next(self.view.manga_mode, self.view.manga_shift, self.get_effective_filter_mode(), self.config.pdf_render_size) {
             if self.config.limiter_mode && self.config.limiter_stop_at_end { return; }
             self.go_next_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -357,7 +360,7 @@ impl App {
         self.prepare_nav();
         self.manager.target_index = 0;
         let max_dim = self.get_effective_max_dim(ctx);
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
+        self.manager.schedule_prefetch(self.get_effective_filter_mode(), self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -369,7 +372,7 @@ impl App {
             last.saturating_sub(1)
         } else { last };
         let max_dim = self.get_effective_max_dim(ctx);
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
+        self.manager.schedule_prefetch(self.get_effective_filter_mode(), self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -379,7 +382,7 @@ impl App {
         self.prepare_nav();
         self.manager.target_index = idx;
         let max_dim = self.get_effective_max_dim(ctx);
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
+        self.manager.schedule_prefetch(self.get_effective_filter_mode(), self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -409,7 +412,7 @@ impl App {
         self.config.manga_mode = self.view.manga_mode;
         self.save_config();
         let max_dim = self.get_effective_max_dim(ctx);
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
+        self.manager.schedule_prefetch(self.get_effective_filter_mode(), self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -423,7 +426,7 @@ impl App {
         self.manager.clear_cache();
         self.save_config();
         let max_dim = self.get_effective_max_dim(ctx);
-        self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
+        self.manager.schedule_prefetch(self.get_effective_filter_mode(), self.view.manga_mode, max_dim);
         ctx.request_repaint();
     }
 
@@ -537,7 +540,7 @@ impl App {
             self.manager.apply_sorting(&self.config);
             self.manager.clear_cache();
             let max_dim = self.get_effective_max_dim(ctx);
-            self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
+            self.manager.schedule_prefetch(self.get_effective_filter_mode(), self.view.manga_mode, max_dim);
             self.save_config();
             self.ui.show_sort_settings = false;
         }
@@ -679,9 +682,10 @@ impl App {
             return; // 移動中は他の操作をさせない
         }
 
-        let (wheel, secondary_down) = ctx.input(|i| (
-            i.smooth_scroll_delta.y, 
-            i.pointer.button_down(egui::PointerButton::Secondary)
+        let (wheel, secondary_down, primary_down) = ctx.input(|i| (
+            i.smooth_scroll_delta.y,
+            i.pointer.button_down(egui::PointerButton::Secondary),
+            i.pointer.button_down(egui::PointerButton::Primary),
         ));
 
         if wheel != 0.0 {
@@ -697,7 +701,7 @@ impl App {
                     let y = (rel.y + self.scroll_offset.y) * ratio - rel.y;
                     self.pending_scroll = Some(egui::vec2(x.max(0.0), y.max(0.0)));
                 }
-            } else {
+            } else if !primary_down {
                 self.wheel_accumulator += wheel;
                 if self.wheel_accumulator.abs() >= ui::WHEEL_NAV_THRESHOLD {
                     if self.wheel_accumulator > 0.0 { self.go_prev(ctx); } else { self.go_next(ctx); }
@@ -969,7 +973,7 @@ impl App {
                 self.manager.apply_sorting(&self.config);
                 self.manager.clear_cache();
                 let max_dim = self.get_effective_max_dim(ctx);
-                self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
+                self.manager.schedule_prefetch(self.get_effective_filter_mode(), self.view.manga_mode, max_dim);
                 self.save_config();
             }
         }
@@ -1162,7 +1166,7 @@ impl App {
                 self.save_config();
                 self.manager.clear_cache();
                 let max_dim = self.get_effective_max_dim(ctx);
-                self.manager.schedule_prefetch(self.config.filter_mode, self.view.manga_mode, max_dim);
+                self.manager.schedule_prefetch(self.get_effective_filter_mode(), self.view.manga_mode, max_dim);
             }
             TogglePdfWarning => { self.config.show_pdf_warning = !self.config.show_pdf_warning; self.save_config(); }
             OpenLimiterSettings => {

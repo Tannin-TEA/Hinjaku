@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
-/// コマンドライン引数を解析して (INI名, 対象パス, デバッグフラグ, レンダラー上書き) を返す
-pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>, bool, Option<String>) {
+/// コマンドライン引数を解析して (INI名, 対象パス, デバッグフラグ, レンダラー上書き, proモード) を返す
+pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>, bool, Option<String>, bool) {
     let mut config_name = None;
     let mut path_arg = None;
     let mut debug_mode = false;
     let mut renderer_override = None;
+    let mut pro_mode = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -27,6 +28,10 @@ pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>, bool, Op
                 renderer_override = Some("glow".to_string());
                 i += 1;
             }
+            "-pro" => {
+                pro_mode = true;
+                i += 1;
+            }
             _ if !args[i].starts_with('-') && path_arg.is_none() => {
                 path_arg = Some(PathBuf::from(&args[i]));
                 i += 1;
@@ -34,7 +39,7 @@ pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>, bool, Op
             _ => i += 1,
         }
     }
-    (config_name, path_arg, debug_mode, renderer_override)
+    (config_name, path_arg, debug_mode, renderer_override, pro_mode)
 }
 
 /// Windows環境での二重起動防止チェック
@@ -54,17 +59,18 @@ pub fn check_single_instance() -> Option<isize> {
     { Some(0) }
 }
 
-/// ウィンドウタイトルを構築する (例: "Hinjaku - OpenGL {custom.ini}")
-pub fn build_window_title(config_name: Option<&str>, renderer: &crate::config::RendererMode) -> String {
+/// ウィンドウタイトルを構築する (例: "Hinjaku - ProMode - OpenGL {custom.ini}")
+pub fn build_window_title(config_name: Option<&str>, renderer: &crate::config::RendererMode, pro_mode: bool) -> String {
     let renderer_str = match renderer {
         crate::config::RendererMode::Glow => "OpenGL",
         crate::config::RendererMode::Wgpu => "Wgpu",
     };
+    let pro_part = if pro_mode { "ProMode - " } else { "" };
     let config_part = config_name
         .filter(|&n| n != "config.ini")
         .map(|n| format!(" {{{}}}", n))
         .unwrap_or_default();
-    format!("Hinjaku - {}{}", renderer_str, config_part)
+    format!("Hinjaku - {}{}{}", pro_part, renderer_str, config_part)
 }
 
 /// WindowsのGUIアプリとして起動しつつ、起動元のコンソールに出力できるようにする

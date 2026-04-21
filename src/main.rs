@@ -21,7 +21,7 @@ mod toast;
 
 fn main() -> eframe::Result<()> {
     // 1. 引数解析
-    let (config_name, path_arg, debug_cli, renderer_override) = startup::parse_args(&std::env::args().collect::<Vec<_>>());
+    let (config_name, path_arg, debug_cli, renderer_override, pro_mode) = startup::parse_args(&std::env::args().collect::<Vec<_>>());
 
     if debug_cli {
         startup::setup_console();
@@ -48,7 +48,7 @@ fn main() -> eframe::Result<()> {
         }
     }
 
-    let title = startup::build_window_title(config_name.as_deref(), &config.renderer);
+    let title = startup::build_window_title(config_name.as_deref(), &config.renderer, pro_mode);
 
     // 4. UI起動設定
     let mut viewport = egui::ViewportBuilder::default()
@@ -89,7 +89,7 @@ fn main() -> eframe::Result<()> {
             let title_clone = title.clone();
             move |cc| {
             let archive_reader = std::sync::Arc::new(archive::DefaultArchiveReader);
-            Box::new(viewer::App::new(cc, initial_path, config, config_path, archive_reader, &title_clone, debug_cli))
+            Box::new(viewer::App::new(cc, initial_path, config, config_path, archive_reader, &title_clone, debug_cli, pro_mode))
         }}),
     )
 }
