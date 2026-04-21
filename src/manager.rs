@@ -624,8 +624,9 @@ impl Manager {
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn invalidate_cache_for(&mut self, _index: usize, entry_name: &str) {
-        self.invalidate(entry_name);
+    pub fn invalidate_cache_for(&mut self, index: usize, entry_name: &str) {
+        let key = format!("{}:{}", index, entry_name);
+        self.invalidate(&key);
     }
 
     pub fn invalidate(&mut self, key: &str) {
