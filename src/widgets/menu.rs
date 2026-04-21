@@ -155,9 +155,9 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
     });
     ui.menu_button("PDF品質", |ui| {
         ui.set_min_width(120.0);
-        for s in [720, 1080, 1440, 1920, 2880] {
-            if ui.selectable_label(config.pdf_render_size == s, format!("{}px", s)).clicked() {
-                ui.close_menu(); action = Some(ViewerAction::SetPdfRenderSize(s));
+        for dpi in [72u32, 96, 150, 300] {
+            if ui.selectable_label(config.pdf_render_dpi == dpi, format!("{} dpi", dpi)).clicked() {
+                ui.close_menu(); action = Some(ViewerAction::SetPdfRenderSize(dpi));
             }
         }
     });

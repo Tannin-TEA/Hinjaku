@@ -52,7 +52,7 @@ pub fn list_pdf(path: &Path) -> Result<Vec<ImageEntry>> {
     Ok(entries)
 }
 
-pub fn read_pdf(path: &Path, page_index: Option<usize>, max_dim: u32) -> Result<Vec<u8>> {
+pub fn read_pdf(path: &Path, page_index: Option<usize>, dpi: u32) -> Result<Vec<u8>> {
     let pdfium = init_pdfium()?;
     let document = pdfium
         .load_pdf_from_file(path, None)
@@ -73,7 +73,7 @@ pub fn read_pdf(path: &Path, page_index: Option<usize>, max_dim: u32) -> Result<
         ));
     }
 
-    let scale = (max_dim as f32 / width.max(height)).min(10.0);
+    let scale = (dpi as f32 / 72.0).min(10.0);
     let render_w = ((width * scale) as i32).clamp(1, 8192);
     let render_h = ((height * scale) as i32).clamp(1, 8192);
 

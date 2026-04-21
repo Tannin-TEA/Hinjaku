@@ -479,11 +479,6 @@ pub fn limiter_settings_window(
                 ui.label("フォルダ/アーカイブ移動待機時間（秒）");
                 changed |= ui.add(egui::Slider::new(&mut config.limiter_folder_duration, 0.0..=2.0).step_by(0.01)).changed();
             });
-            ui.group(|ui| {
-                ui.label("PDF レンダリング品質（長辺の解像度）");
-                changed |= ui.add(egui::Slider::new(&mut config.pdf_render_size, 480..=3840).step_by(10.0).logarithmic(true)).changed();
-                ui.label(RichText::new("値を下げるとPDFの表示が劇的に軽くなります。").small());
-            });
             ui.add_space(12.0);
             if ui.button("閉じる").clicked() { close_clicked = true; }
         });

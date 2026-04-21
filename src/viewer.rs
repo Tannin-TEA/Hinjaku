@@ -202,7 +202,7 @@ impl App {
     fn get_effective_max_dim(&self, ctx: &egui::Context) -> u32 {
         let kind = self.manager.archive_path.as_ref().map(|p| utils::detect_kind(p)).unwrap_or(utils::ArchiveKind::Plain);
         if kind == utils::ArchiveKind::Pdf {
-            self.config.pdf_render_size
+            self.config.pdf_render_dpi
         } else {
             u32::MAX
         }
@@ -322,7 +322,7 @@ impl App {
     fn go_single_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_prev(false, false, self.get_effective_filter_mode(), self.config.pdf_render_size) {
+        if !self.manager.go_prev(false, false, self.get_effective_filter_mode(), self.get_effective_max_dim(ctx)) {
             if self.config.limiter_mode && self.config.limiter_stop_at_start { return; }
             self.go_prev_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -331,7 +331,7 @@ impl App {
     fn go_single_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_next(false, false, self.get_effective_filter_mode(), self.config.pdf_render_size) {
+        if !self.manager.go_next(false, false, self.get_effective_filter_mode(), self.get_effective_max_dim(ctx)) {
             if self.config.limiter_mode && self.config.limiter_stop_at_end { return; }
             self.go_next_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -340,7 +340,7 @@ impl App {
     fn go_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_prev(self.view.manga_mode, self.view.manga_shift, self.get_effective_filter_mode(), self.config.pdf_render_size) {
+        if !self.manager.go_prev(self.view.manga_mode, self.view.manga_shift, self.get_effective_filter_mode(), self.get_effective_max_dim(ctx)) {
             if self.config.limiter_mode && self.config.limiter_stop_at_start { return; }
             self.go_prev_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -349,7 +349,7 @@ impl App {
     fn go_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_next(self.view.manga_mode, self.view.manga_shift, self.get_effective_filter_mode(), self.config.pdf_render_size) {
+        if !self.manager.go_next(self.view.manga_mode, self.view.manga_shift, self.get_effective_filter_mode(), self.get_effective_max_dim(ctx)) {
             if self.config.limiter_mode && self.config.limiter_stop_at_end { return; }
             self.go_next_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -1162,7 +1162,7 @@ impl App {
                 self.save_config();
             }
             SetPdfRenderSize(s) => {
-                self.config.pdf_render_size = s;
+                self.config.pdf_render_dpi = s;
                 self.save_config();
                 self.manager.clear_cache();
                 let max_dim = self.get_effective_max_dim(ctx);

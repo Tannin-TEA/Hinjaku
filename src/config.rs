@@ -117,8 +117,8 @@ pub struct Config {
     pub limiter_stop_at_end: bool,
     /// PDF警告を表示するか
     pub show_pdf_warning: bool,
-    /// PDFのレンダリングサイズ（長辺）
-    pub pdf_render_size: u32,
+    /// PDFのレンダリングDPI
+    pub pdf_render_dpi: u32,
     /// マンガモード
     pub manga_mode: bool,
     /// 表示モード
@@ -174,12 +174,12 @@ impl Default for Config {
             mouse5_action: "NextPage".to_string(),
             mouse_middle_action: "ToggleFit".to_string(),
             limiter_mode: false,
-            limiter_page_duration: 0.05,
-            limiter_folder_duration: 0.2,
+            limiter_page_duration: 0.25,
+            limiter_folder_duration: 0.5,
             limiter_stop_at_start: true,
             limiter_stop_at_end: false,
             show_pdf_warning: true,
-            pdf_render_size: 1920,
+            pdf_render_dpi: 96,
             manga_mode: false,
             display_mode: DisplayMode::Fit,
             is_fullscreen: false,
@@ -307,6 +307,7 @@ pub fn load_config_file(custom_name: Option<&str>) -> (Config, Option<PathBuf>) 
             }
             if let Some(v) = sec.get("LimiterStopAtStart") { cfg.limiter_stop_at_start = v == "true"; }
             if let Some(v) = sec.get("LimiterStopAtEnd") { cfg.limiter_stop_at_end = v == "true"; }
+            if let Some(v) = sec.get("PdfRenderDpi") { if let Ok(n) = v.parse::<u32>() { cfg.pdf_render_dpi = n.clamp(72, 600); } }
 
             if let Some(v) = sec.get("MangaMode") { cfg.manga_mode = v == "true"; }
             if let Some(v) = sec.get("DisplayMode") {
@@ -401,7 +402,7 @@ pub fn save_config_file(cfg: &Config, path: &std::path::Path) -> Result<()> {
         .set("LimiterStopAtStart", cfg.limiter_stop_at_start.to_string())
         .set("LimiterStopAtEnd", cfg.limiter_stop_at_end.to_string())
         .set("ShowPdfWarning", cfg.show_pdf_warning.to_string())
-        .set("PdfRenderSize", cfg.pdf_render_size.to_string())
+        .set("PdfRenderDpi", cfg.pdf_render_dpi.to_string())
         .set("OpenFromEnd", cfg.open_from_end.to_string())
         .set("MangaMode", cfg.manga_mode.to_string())
         .set("DisplayMode", match cfg.display_mode {

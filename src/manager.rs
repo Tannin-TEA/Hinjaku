@@ -337,7 +337,8 @@ impl Manager {
                                     } else { 0 };
                                 }
                                 self.target_index = self.current;
-                                self.schedule_prefetch(config.filter_mode, manga, config.pdf_render_size);
+                                let max_dim = if self.archive_path.as_ref().map(|p| utils::detect_kind(p)) == Some(utils::ArchiveKind::Pdf) { config.pdf_render_dpi } else { u32::MAX };
+                                self.schedule_prefetch(config.filter_mode, manga, max_dim);
                             }
                         }
                         Err(e) => { list_error = Some(e); }
