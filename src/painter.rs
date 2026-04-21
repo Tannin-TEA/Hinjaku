@@ -156,14 +156,6 @@ pub fn draw_main_area(
                     ui.painter().image(tex2.id(), r2, uv, Color32::WHITE);
                 }
 
-                if is_at_end {
-                    ui.add_space(20.0);
-                    ui.vertical_centered(|ui| {
-                        if ui.button(RichText::new("次のフォルダへ").size(20.0).strong()).clicked() {
-                            action = Some(ViewerAction::NextDir);
-                        }
-                    });
-                }
                 return (resp, current_eff);
             }
         }
@@ -175,14 +167,6 @@ pub fn draw_main_area(
             DisplayMode::Manual => zoom,
         };
         let r = draw_centered(ui, tex1.id(), tex1_size, avail, mode, zoom);
-        if is_at_end {
-            ui.add_space(20.0);
-            ui.vertical_centered(|ui| {
-                if ui.button(RichText::new("次のフォルダへ").size(20.0).strong()).clicked() {
-                    action = Some(ViewerAction::NextDir);
-                }
-            });
-        }
         (r, current_eff)
     });
     let (resp, calculated_zoom) = output.inner;

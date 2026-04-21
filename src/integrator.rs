@@ -215,12 +215,12 @@ pub fn get_memory_usage_str() -> String {
         let process = unsafe { GetCurrentProcess() };
         let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
         if unsafe { GetProcessMemoryInfo(process, &mut counters as *mut _ as *mut _, size) } != 0 {
-            // タスクマネージャーの「メモリ」列（ワーキングセット）の数値に合わせる
+            // WorkingSetSize = 共有DLL含む全ページ。タスクマネージャー「メモリ」列より多く見えるが正確。
             let bytes = counters.WorkingSetSize as u64;
-            return format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0));
+            return format!("RAM: {:.1} MB", bytes as f64 / (1024.0 * 1024.0));
         }
     }
-    "--- MB".to_string()
+    "RAM: --- MB".to_string()
 }
 
 /// Windowsのメモリマッピングを使用してフォントファイルを読み込む

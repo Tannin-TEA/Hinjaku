@@ -30,17 +30,14 @@ pub struct KeyboardState {
     pub last_page: bool,
     pub bs: bool,
     pub open_key_config: bool,
-    pub open_external_1: bool,
-    pub open_external_2: bool,
-    pub open_external_3: bool,
-    pub open_external_4: bool,
-    pub open_external_5: bool,
+    pub open_external: [bool; 9],
     pub toggle_linear: bool,
     pub toggle_rtl: bool,
     pub quit: bool,
     pub toggle_bg: bool,
     pub toggle_debug: bool,
     pub toggle_limiter: bool,
+    pub jump_page: bool,
 }
 
 pub fn gather_input(ctx: &egui::Context, config: &Config) -> KeyboardState {
@@ -80,17 +77,18 @@ pub fn gather_input(ctx: &egui::Context, config: &Config) -> KeyboardState {
             last_page: check("LastPage"),
             bs: check("RevealExplorer"),
             open_key_config: check("OpenKeyConfig"),
-            open_external_1: check("OpenExternal1"),
-            open_external_2: check("OpenExternal2"),
-            open_external_3: check("OpenExternal3"),
-            open_external_4: check("OpenExternal4"),
-            open_external_5: check("OpenExternal5"),
+            open_external: [
+                check("OpenExternal1"), check("OpenExternal2"), check("OpenExternal3"),
+                check("OpenExternal4"), check("OpenExternal5"), check("OpenExternal6"),
+                check("OpenExternal7"), check("OpenExternal8"), check("OpenExternal9"),
+            ],
             toggle_linear: check("ToggleLinear"),
             toggle_rtl: check("ToggleMangaRtl"),
             quit: check("Quit"),
             toggle_bg: check("ToggleBg"),
             toggle_debug: check("ToggleDebug"),
             toggle_limiter: check("ToggleLimiter"),
+            jump_page: check("JumpPage"),
         }
     })
 }

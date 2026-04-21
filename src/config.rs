@@ -57,7 +57,7 @@ pub struct ExternalAppConfig {
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// 外部アプリ設定 (最大5つ)
+    /// 外部アプリ設定 (最大9つ)
     pub external_apps: Vec<ExternalAppConfig>,
     /// 画像の補正（スムージング）モード
     pub filter_mode: FilterMode,
@@ -150,6 +150,10 @@ impl Default for Config {
                 ExternalAppConfig { name: "未設定".to_owned(), exe: "".to_owned(), args: vec!["%P".to_owned()], close_after_launch: false },
                 ExternalAppConfig { name: "未設定".to_owned(), exe: "".to_owned(), args: vec!["%P".to_owned()], close_after_launch: false },
                 ExternalAppConfig { name: "未設定".to_owned(), exe: "".to_owned(), args: vec!["%P".to_owned()], close_after_launch: false },
+                ExternalAppConfig { name: "未設定".to_owned(), exe: "".to_owned(), args: vec!["%P".to_owned()], close_after_launch: false },
+                ExternalAppConfig { name: "未設定".to_owned(), exe: "".to_owned(), args: vec!["%P".to_owned()], close_after_launch: false },
+                ExternalAppConfig { name: "未設定".to_owned(), exe: "".to_owned(), args: vec!["%P".to_owned()], close_after_launch: false },
+                ExternalAppConfig { name: "未設定".to_owned(), exe: "".to_owned(), args: vec!["%P".to_owned()], close_after_launch: false },
             ],
             filter_mode: FilterMode::Bilinear,
             allow_multiple_instances: false,
@@ -219,12 +223,17 @@ impl Default for Config {
                 ("OpenExternal3", ""),
                 ("OpenExternal4", ""),
                 ("OpenExternal5", ""),
+                ("OpenExternal6", ""),
+                ("OpenExternal7", ""),
+                ("OpenExternal8", ""),
+                ("OpenExternal9", ""),
                 ("ToggleLinear", "I"),
                 ("ToggleMangaRtl", "Y"),
                 ("Quit", "Q, Ctrl+W"),
                 ("ToggleBg", "B"),
                 ("ToggleDebug", "F12"),
                 ("ToggleLimiter", "L"),
+                ("JumpPage", "J"),
             ].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         }
     }
@@ -330,7 +339,7 @@ pub fn load_config_file(custom_name: Option<&str>) -> (Config, Option<PathBuf>) 
             }
         }
 
-        for i in 0..5 {
+        for i in 0..9 {
             let section_name = format!("App_{}", i + 1);
             if let Some(sec) = ini.section(Some(&section_name)) {
                 if let Some(v) = sec.get("Name") { cfg.external_apps[i].name = v.to_string(); }

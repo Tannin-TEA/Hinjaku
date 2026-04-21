@@ -19,6 +19,8 @@ struct UiState {
     sort_focus_idx:     usize,
     settings_args_tmp:  Vec<String>,
     boss_mode:          bool,
+    show_jump_dialog:   bool,
+    jump_input:         String,
 }
 
 impl UiState {
@@ -36,6 +38,8 @@ impl UiState {
             sort_focus_idx:     0,
             settings_args_tmp:  config.external_apps.iter().map(|a| a.args.join(" ")).collect(),
             boss_mode:          false,
+            show_jump_dialog:   false,
+            jump_input:         String::new(),
         }
     }
 }
@@ -106,6 +110,13 @@ impl App {
 
         let mut manager = Manager::new(cc.egui_ctx.clone(), archive_reader);
         manager.open_from_end = config.open_from_end;
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+            let w = unsafe { GetSystemMetrics(SM_CXSCREEN) } as u32;
+            let h = unsafe { GetSystemMetrics(SM_CYSCREEN) } as u32;
+            manager.display_max_dim = w.max(h).max(1920);
+        }
 
         if config.is_fullscreen {
             cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
@@ -199,12 +210,16 @@ impl App {
         if self.pro_mode { config::FilterMode::Nearest } else { self.config.filter_mode }
     }
 
-    fn get_effective_max_dim(&self, ctx: &egui::Context) -> u32 {
+    fn get_effective_max_dim(&mut self, ctx: &egui::Context) -> u32 {
         let kind = self.manager.archive_path.as_ref().map(|p| utils::detect_kind(p)).unwrap_or(utils::ArchiveKind::Plain);
         if kind == utils::ArchiveKind::Pdf {
             self.config.pdf_render_dpi
         } else {
-            u32::MAX
+            let ppp = ctx.pixels_per_point();
+            let r = ctx.screen_rect();
+            let dim = ((r.width().max(r.height()) * ppp) as u32).max(1920);
+            self.manager.display_max_dim = dim;
+            dim
         }
     }
 
@@ -322,7 +337,8 @@ impl App {
     fn go_single_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_prev(false, false, self.get_effective_filter_mode(), self.get_effective_max_dim(ctx)) {
+        let (filter, max_dim) = (self.get_effective_filter_mode(), self.get_effective_max_dim(ctx));
+        if !self.manager.go_prev(false, false, filter, max_dim) {
             if self.config.limiter_mode && self.config.limiter_stop_at_start { return; }
             self.go_prev_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -331,7 +347,8 @@ impl App {
     fn go_single_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_next(false, false, self.get_effective_filter_mode(), self.get_effective_max_dim(ctx)) {
+        let (filter, max_dim) = (self.get_effective_filter_mode(), self.get_effective_max_dim(ctx));
+        if !self.manager.go_next(false, false, filter, max_dim) {
             if self.config.limiter_mode && self.config.limiter_stop_at_end { return; }
             self.go_next_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -340,7 +357,8 @@ impl App {
     fn go_prev(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_prev(self.view.manga_mode, self.view.manga_shift, self.get_effective_filter_mode(), self.get_effective_max_dim(ctx)) {
+        let (filter, max_dim) = (self.get_effective_filter_mode(), self.get_effective_max_dim(ctx));
+        if !self.manager.go_prev(self.view.manga_mode, self.view.manga_shift, filter, max_dim) {
             if self.config.limiter_mode && self.config.limiter_stop_at_start { return; }
             self.go_prev_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -349,7 +367,8 @@ impl App {
     fn go_next(&mut self, ctx: &egui::Context) {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
-        if !self.manager.go_next(self.view.manga_mode, self.view.manga_shift, self.get_effective_filter_mode(), self.get_effective_max_dim(ctx)) {
+        let (filter, max_dim) = (self.get_effective_filter_mode(), self.get_effective_max_dim(ctx));
+        if !self.manager.go_next(self.view.manga_mode, self.view.manga_shift, filter, max_dim) {
             if self.config.limiter_mode && self.config.limiter_stop_at_end { return; }
             self.go_next_dir(ctx);
         } else { ctx.request_repaint(); }
@@ -533,7 +552,8 @@ impl App {
         let is_typing    = ctx.wants_keyboard_input();
         let is_capturing = self.ui.capturing_key_for.is_some();
         let modal_open   = self.ui.show_settings || self.ui.show_key_config
-                        || self.config.is_first_run || self.ui.show_sort_settings || self.ui.show_limiter_settings;
+                        || self.config.is_first_run || self.ui.show_sort_settings || self.ui.show_limiter_settings
+                        || self.ui.show_jump_dialog;
 
         // モーダル表示中であっても、トグルキーによるクローズ処理はここで行う
         if !is_typing && !is_capturing && self.ui.show_sort_settings && k.sort_settings {
@@ -622,12 +642,11 @@ impl App {
         if k.toggle_rtl       { self.config.manga_rtl = !self.config.manga_rtl; self.save_config(); }
         if k.toggle_linear    { self.toggle_filter_mode(ctx); }
         if k.toggle_debug     { self.ui.show_debug = !self.ui.show_debug; }
+        if k.jump_page        { self.ui.show_jump_dialog = true; self.ui.jump_input.clear(); }
         if k.open_key_config  { self.ui.show_key_config = true; }
-        if k.open_external_1  { self.open_external(0, ctx); }
-        if k.open_external_2  { self.open_external(1, ctx); }
-        if k.open_external_3  { self.open_external(2, ctx); }
-        if k.open_external_4  { self.open_external(3, ctx); }
-        if k.open_external_5  { self.open_external(4, ctx); }
+        for (i, &pressed) in k.open_external.iter().enumerate() {
+            if pressed { self.open_external(i, ctx); }
+        }
         if k.bs {
             if let Err(e) = shell::reveal_current_in_explorer(&self.manager) { self.add_toast(e, ctx); }
         }
@@ -979,6 +998,43 @@ impl App {
         }
         if self.ui.show_debug { widgets::debug_window(ctx, &mut self.ui.show_debug, &self.manager); }
         if self.ui.show_about { widgets::about_window(ctx, &mut self.ui.show_about); }
+        if self.ui.show_jump_dialog {
+            let total = self.manager.entries.len();
+            let mut jumped = false;
+            let mut closed = false;
+            egui::Window::new("ページジャンプ")
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    let current = self.manager.current + 1;
+                    let page_info = if self.view.manga_mode {
+                        format!("現在: {}", current)
+                    } else {
+                        format!("現在: {} / {}", current, total)
+                    };
+                    ui.label(page_info);
+                    ui.label(format!("ページ番号を入力 (1 – {})", total));
+                    let enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                    let resp = ui.text_edit_singleline(&mut self.ui.jump_input);
+                    resp.request_focus();
+                    if enter { jumped = true; }
+                    ui.horizontal(|ui| {
+                        if ui.button("ジャンプ").clicked() { jumped = true; }
+                        if ui.button("キャンセル").clicked() { closed = true; }
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { closed = true; }
+                });
+            if jumped {
+                if let Ok(n) = self.ui.jump_input.trim().parse::<usize>() {
+                    let idx = n.saturating_sub(1).min(total.saturating_sub(1));
+                    self.seek(idx, ctx);
+                }
+                self.ui.show_jump_dialog = false;
+            } else if closed {
+                self.ui.show_jump_dialog = false;
+            }
+        }
         if self.ui.show_limiter_settings {
             if widgets::limiter_settings_window(ctx, &mut self.ui.show_limiter_settings, &mut self.config) {
                 self.save_config();

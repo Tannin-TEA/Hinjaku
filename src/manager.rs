@@ -111,6 +111,7 @@ pub struct Manager {
     pub is_listing: bool,
 
     // --- Loader State ---
+    pub display_max_dim: u32,
     cache: HashMap<String, CachedImage>,
     cache_lru: VecDeque<String>,
     load_tx: Sender<LoadRequest>,
@@ -177,6 +178,8 @@ impl Manager {
         archive_reader: &Arc<dyn ArchiveReader>,
     ) -> std::result::Result<Vec<FrameData>, String> {
         let kind = utils::detect_kind(&req.archive_path);
+        let limit = req.max_dim;
+
         let bytes = if let Some(idx) = req.entry_index {
             if matches!(kind, utils::ArchiveKind::Zip) {
                 if zip_cache.as_ref().map(|(p, _)| p != &req.archive_path).unwrap_or(true) {
@@ -199,14 +202,12 @@ impl Manager {
                 if zip_cache.is_some() { *zip_cache = None; }
                 archive_reader.read_entry(&req.archive_path, &req.entry_name, Some(idx), req.max_dim).map_err(|e| e.to_string())?
             } else {
-                // 通常画像は定数の 1920 を使用
-                archive_reader.read_entry(&req.archive_path, &req.entry_name, Some(idx), image::MAX_TEX_DIM).map_err(|e| e.to_string())?
+                archive_reader.read_entry(&req.archive_path, &req.entry_name, Some(idx), limit).map_err(|e| e.to_string())?
             }
         } else {
             // Plainファイルまたは7zアーカイブからの読み込み
             if zip_cache.is_some() { *zip_cache = None; }
-            // PDF以外は定数 1920 を上限として扱う
-            let limit = if kind == utils::ArchiveKind::Pdf { req.max_dim } else { image::MAX_TEX_DIM };
+            let limit = req.max_dim;
             archive_reader.read_entry(&req.archive_path, &req.entry_name, None, limit).map_err(|e| e.to_string())?
         };
 
@@ -245,7 +246,7 @@ impl Manager {
                         let delay_ms = if delay_ms < loading::MIN_ANIM_FRAME_DELAY_MS { loading::DEFAULT_ANIM_FRAME_DELAY_MS } else { delay_ms };
 
                         let img = frame.into_buffer();
-                        let img = downscale_if_needed(img, req.max_dim, req.filter_mode);
+                        let img = downscale_if_needed(img, limit, req.filter_mode);
                         let img = apply_rotation(img, req.rotation);
                         result_frames.push(FrameData { image: img, delay_ms });
                     }
@@ -255,12 +256,19 @@ impl Manager {
             }
         }
 
-        let img = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8();
+        let img = if ext.ends_with(".avif") {
+            #[cfg(target_os = "windows")]
+            { crate::wic::decode_rgba(&bytes).map_err(|e| e)? }
+            #[cfg(not(target_os = "windows"))]
+            { ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8() }
+        } else {
+            ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8()
+        };
 
         let img = if kind == utils::ArchiveKind::Pdf {
             img
         } else {
-            downscale_if_needed(img, req.max_dim, req.filter_mode)
+            downscale_if_needed(img, limit, req.filter_mode)
         };
         let img = apply_rotation(img, req.rotation);
         
@@ -306,6 +314,7 @@ impl Manager {
             generation,
             archive_reader,
             ctx,
+            display_max_dim: 1920,
         }
     }
 
@@ -337,7 +346,7 @@ impl Manager {
                                     } else { 0 };
                                 }
                                 self.target_index = self.current;
-                                let max_dim = if self.archive_path.as_ref().map(|p| utils::detect_kind(p)) == Some(utils::ArchiveKind::Pdf) { config.pdf_render_dpi } else { u32::MAX };
+                                let max_dim = if self.archive_path.as_ref().map(|p| utils::detect_kind(p)) == Some(utils::ArchiveKind::Pdf) { config.pdf_render_dpi } else { self.display_max_dim };
                                 self.schedule_prefetch(config.filter_mode, manga, max_dim);
                             }
                         }

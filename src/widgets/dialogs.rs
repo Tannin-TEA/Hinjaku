@@ -26,10 +26,10 @@ pub fn settings_window(
 
             let scroll_height = ui.available_height() - 100.0;
             egui::ScrollArea::vertical().max_height(scroll_height).show(ui, |ui| {
-                for i in 0..5 {
+                for i in 0..9 {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("アプリ {}", i + 1)).strong());
+                            ui.label(RichText::new(format!("送る {}", i + 1)).strong());
                             ui.add(egui::TextEdit::singleline(&mut config.external_apps[i].name).hint_text("メニューに表示される名前"));
                             ui.checkbox(&mut config.external_apps[i].close_after_launch, "起動後に終了");
                         });
@@ -56,7 +56,7 @@ pub fn settings_window(
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("適用").clicked() {
-                        for i in 0..5 {
+                        for i in 0..9 {
                             config.external_apps[i].args = settings_args_tmp[i]
                                 .split_whitespace()
                                 .map(|s| s.to_string())
@@ -260,12 +260,29 @@ pub fn key_config_window(
             egui::ScrollArea::vertical().max_height(scroll_height).show(ui, |ui| {
                 let conflicts = build_conflict_set(config);
 
-                let mut shown = HashSet::new();
+                // キーコンフィグ画面に表示しないキー
+                let mut shown: HashSet<String> = ["ToggleLimiter"].iter().map(|s| s.to_string()).collect();
                 let categories = [
-                    ("移動・ページ送り", vec!["PrevPage", "NextPage", "PrevPageSingle", "NextPageSingle", "FirstPage", "LastPage", "PrevDir", "NextDir"]),
-                    ("画像操作",         vec!["ToggleFit", "ZoomIn", "ZoomOut", "ToggleManga", "ToggleMangaRtl", "ToggleLinear", "ToggleBg", "RotateCW", "RotateCCW"]),
-                    ("フォルダ・ツリー操作", vec!["Up", "Down", "Left", "Right", "Enter", "ToggleTree", "RevealExplorer"]),
-                    ("システム・その他",  vec!["ToggleFullscreen", "ToggleBorderless", "Escape", "SortSettings", "OpenKeyConfig", "OpenExternal1", "OpenExternal2", "OpenExternal3", "OpenExternal4", "OpenExternal5", "Quit"]),
+                    ("移動・ページ送り", vec![
+                        "PrevPage", "NextPage", "PrevPageSingle", "NextPageSingle",
+                        "FirstPage", "LastPage", "JumpPage", "PrevDir", "NextDir",
+                    ]),
+                    ("画像操作", vec![
+                        "ToggleFit", "ZoomIn", "ZoomOut", "ZoomReset",
+                        "ToggleManga", "ToggleMangaRtl", "RotateCW", "RotateCCW",
+                        "ToggleLinear", "ToggleBg",
+                    ]),
+                    ("ツリー・フォルダ操作", vec![
+                        "Up", "Down", "Left", "Right", "Enter",
+                        "ToggleTree", "RevealExplorer",
+                    ]),
+                    ("システム・その他", vec![
+                        "ToggleFullscreen", "ToggleBorderless", "ToggleSmallBorderless",
+                        "Escape", "SortSettings", "OpenKeyConfig", "ToggleDebug", "Quit",
+                        "OpenExternal1", "OpenExternal2", "OpenExternal3",
+                        "OpenExternal4", "OpenExternal5", "OpenExternal6",
+                        "OpenExternal7", "OpenExternal8", "OpenExternal9",
+                    ]),
                 ];
 
                 for (cat_name, key_ids) in categories {

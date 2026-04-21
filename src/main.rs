@@ -17,7 +17,9 @@ mod startup;
 mod pdf_handler;
 mod widgets;
 mod input;
-mod toast; 
+mod toast;
+#[cfg(target_os = "windows")]
+mod wic;
 
 fn main() -> eframe::Result<()> {
     // 1. 引数解析
