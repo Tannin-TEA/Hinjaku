@@ -84,11 +84,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Hinjaku",
         options,
-        Box::new({
-            let title_clone = title.clone();
+        Box::new(
             move |cc| {
             let archive_reader = std::sync::Arc::new(archive::DefaultArchiveReader);
-            Box::new(viewer::App::new(cc, initial_path, config, config_path, archive_reader, &title_clone, debug_cli, pro_mode))
-        }}),
+            Box::new(viewer::App::new(cc, initial_path, config, config_path, archive_reader, debug_cli, pro_mode))
+        }),
     )
 }

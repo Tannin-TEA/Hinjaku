@@ -14,13 +14,28 @@ const HJK_COPYDATA_ID: usize = 0x484A4B; // "HJK"
 pub fn send_path_via_wm_copydata(path: &Path) {
     #[cfg(target_os = "windows")]
     unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COPYDATA, FindWindowW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COPYDATA, EnumWindows, GetWindowTextW};
         use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
+        use windows_sys::Win32::Foundation::{HWND, LPARAM};
 
-        // 1. "Hinjaku" で始まるクラスまたはタイトルを検索
-        // ※ eframe/winit のデフォルト動作に合わせてタイトルで検索
-        let title_wide: Vec<u16> = "Hinjaku\0".encode_utf16().collect();
-        let hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
+        struct Search { hwnd: HWND }
+        unsafe extern "system" fn find_hinjaku(hwnd: HWND, lparam: LPARAM) -> i32 {
+            let s = &mut *(lparam as *mut Search);
+            let mut buf = [0u16; 512];
+            let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), 512);
+            if len > 0 {
+                // null文字を除去して解釈
+                let title = String::from_utf16_lossy(&buf[..len as usize]);
+                if title.starts_with("Hinjaku") {
+                    s.hwnd = hwnd;
+                    return 0; // 見つかったので中断
+                }
+            }
+            1 // 続行
+        }
+        let mut s = Search { hwnd: std::ptr::null_mut() };
+        EnumWindows(Some(find_hinjaku), &mut s as *mut _ as LPARAM);
+        let hwnd = s.hwnd;
 
         if !hwnd.is_null() {
             let path_str = crate::utils::to_clean_string(path);
@@ -36,8 +51,8 @@ pub fn send_path_via_wm_copydata(path: &Path) {
         }
     }
 }
-
-static GLOBAL_TX: OnceLock<mpsc::Sender<PathBuf>> = OnceLock::new();
+/// 外部からのパスを受け取るためのチャネル。PathBuf と、それが外部プロセスからのものか (true) どうか (false) を送る。
+static GLOBAL_TX: OnceLock<mpsc::Sender<(PathBuf, bool)>> = OnceLock::new();
 static GLOBAL_CTX: OnceLock<egui::Context> = OnceLock::new();
 static OLD_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 
@@ -58,8 +73,8 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
                     // 受信したバイナリを UTF-16 スライスとして安全に解釈
                     let u16_slice = std::slice::from_raw_parts((*cds).lpData as *const u16, len);
                     let os_str = std::ffi::OsString::from_wide(u16_slice);
-                    if let Some(tx) = GLOBAL_TX.get() {
-                        let _ = tx.send(PathBuf::from(os_str));
+                    if let Some(tx) = GLOBAL_TX.get() { // WM_COPYDATA は外部からのパスなので true
+                        let _ = tx.send((PathBuf::from(os_str), true));
                         if let Some(ctx) = GLOBAL_CTX.get() {
                             ctx.request_repaint();
                         }
@@ -85,34 +100,63 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
     }
 }
 
-/// Windowsメッセージをフックしてパス受信を待機する
-pub fn install_message_hook(ctx: &egui::Context, window_title: &str) -> Receiver<PathBuf> {
+/// IPC (WM_COPYDATA) および D&D イベントを処理するためのチャネルをセットアップし、
+/// Windowsメッセージフックをインストールする。
+///
+/// 戻り値: (Sender, Receiver) - Sender は D&D イベントを内部から送るために使用し、Receiver は全てのパスイベントを受け取る。
+pub fn setup_ipc_channels(ctx: &egui::Context) -> (mpsc::Sender<(PathBuf, bool)>, Receiver<(PathBuf, bool)>) {
     let (tx, rx) = mpsc::channel();
     
     // OnceLock への値のセット (.set() を使用)
-    let _ = GLOBAL_TX.set(tx);
+    let _ = GLOBAL_TX.set(tx.clone());
     let _ = GLOBAL_CTX.set(ctx.clone());
 
     #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, FindWindowW};
-        // 自身のウィンドウハンドルを取得。
-        // タイトルが動的に変わっている可能性があるため、
-        // main.rs で生成した起動時のタイトルを使用して特定する。
-        let title_wide: Vec<u16> = std::ffi::OsStr::new(window_title).encode_wide().chain(Some(0)).collect();
-        let mut hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
-        
-        // もし見つからない場合は "Hinjaku" 単体で再試行
-        if hwnd.is_null() {
-            hwnd = FindWindowW(std::ptr::null(), "Hinjaku\0".encode_utf16().collect::<Vec<_>>().as_ptr());
-        }
-
-        if !hwnd.is_null() {
-            OLD_WNDPROC.store(GetWindowLongPtrW(hwnd, GWLP_WNDPROC), Ordering::SeqCst);
-            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as *const () as isize);
-        }
+    {
+        // フックのインストールは、ウィンドウハンドルが確定してから行う必要があるため、
+        // `try_install_hook` を別途用意し、App::update で毎フレーム試行する。
+        // ここではチャネルのセットアップのみ。
     }
-    rx
+    (tx, rx)
+}
+
+/// Windowsメッセージをフックする。ウィンドウハンドルが取得できたら一度だけ成功する。
+/// 成功したら true を返す。
+#[cfg(target_os = "windows")]
+pub fn try_install_hook() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, EnumWindows, GetWindowThreadProcessId, GetWindowRect};
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
+
+    unsafe {
+        let target_pid = GetCurrentProcessId();
+        struct Search { pid: u32, hwnd: HWND }
+        unsafe extern "system" fn find_own_window(hwnd: HWND, lparam: LPARAM) -> i32 {
+            let s = &mut *(lparam as *mut Search);
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == s.pid {
+                let mut rect: RECT = std::mem::zeroed();
+                // 自身のPIDかつ、ある程度のサイズがあるウィンドウをメインウィンドウとみなす
+                if GetWindowRect(hwnd, &mut rect) != 0 && (rect.right - rect.left) > 10 {
+                    s.hwnd = hwnd;
+                    return 0;
+                }
+            }
+            1
+        }
+        let mut s = Search { pid: target_pid, hwnd: std::ptr::null_mut() };
+        EnumWindows(Some(find_own_window), &mut s as *mut _ as LPARAM);
+
+        if s.hwnd.is_null() { return false; }
+        let hwnd = s.hwnd;
+
+        // 既にフック済みかチェック (OLD_WNDPROC が 0 でないならフック済み)
+        if OLD_WNDPROC.load(Ordering::SeqCst) != 0 { return true; }
+        OLD_WNDPROC.store(GetWindowLongPtrW(hwnd, GWLP_WNDPROC), Ordering::SeqCst);
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as *const () as isize);
+        true
+    }
 }
 
 /// 外部アプリを起動する

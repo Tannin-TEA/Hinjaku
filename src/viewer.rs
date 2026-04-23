@@ -63,7 +63,8 @@ pub struct App {
     last_archive_path:    Option<PathBuf>,
     error:                Option<String>,
     toasts:               toast::ToastManager,
-    path_rx:              Receiver<PathBuf>,
+    path_tx:              std::sync::mpsc::Sender<(PathBuf, bool)>, // 内部D&DイベントをIPCチャネルに送る用
+    path_rx:              Receiver<(PathBuf, bool)>, // IPCとD&Dイベントを受け取る用
     applied_initial_center: bool,
     initial_center_frame:  u8,
     pro_mode:             bool,
@@ -71,6 +72,7 @@ pub struct App {
     scroll_offset:        egui::Vec2,
     viewport_origin:      egui::Pos2,
     pending_scroll:       Option<egui::Vec2>,
+    hook_installed:       bool, // WM_COPYDATAフックがインストールされたか
 }
 
 impl App {
@@ -80,7 +82,6 @@ impl App {
         config: Config,
         config_path: Option<PathBuf>,
         archive_reader: std::sync::Arc<dyn archive::ArchiveReader>,
-        window_title: &str,
         debug_cli: bool,
         pro_mode: bool,
     ) -> Self {
@@ -129,6 +130,7 @@ impl App {
             cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
         }
 
+        let (tx, rx) = integrator::setup_ipc_channels(&cc.egui_ctx);
         let ui = UiState::new(&config);
         let mut app = Self {
             manager,
@@ -155,7 +157,8 @@ impl App {
             last_archive_path:      None,
             error:                  None,
             toasts:                 toast::ToastManager::new(),
-            path_rx:                integrator::install_message_hook(&cc.egui_ctx, window_title),
+            path_tx:                tx, // setup_ipc_channels から受け取った Sender
+            path_rx:                rx, // setup_ipc_channels から受け取った Receiver
             applied_initial_center: false,
             initial_center_frame:   0,
             pro_mode,
@@ -164,6 +167,7 @@ impl App {
             scroll_offset:          egui::Vec2::ZERO,
             viewport_origin:        egui::Pos2::ZERO,
             pending_scroll:         None,
+            hook_installed:         false, // 初期状態ではフックはインストールされていない
         };
 
         if let Some(path) = initial_path {
@@ -188,7 +192,7 @@ impl App {
     fn open_path(&mut self, path: PathBuf, ctx: &egui::Context) {
         self.error = None;
         let path_str = path.to_string_lossy().into_owned();
-        self.config.recent_paths.retain(|p| p != &path_str);
+        self.config.recent_paths.retain(|p| p != &path_str); // 既存のパスを削除
         self.config.recent_paths.insert(0, path_str);
         if self.config.recent_paths.len() > 10 { self.config.recent_paths.pop(); }
         self.save_config();
@@ -1246,49 +1250,75 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 1. 外部・システムからのイベント処理
-        while let Ok(path) = self.path_rx.try_recv() {
-            self.open_path(path, ctx);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        // 1. WM_COPYDATA フックの遅延インストール
+        // ウィンドウハンドルが確定するまで try_install_hook を呼び続ける
+        if !self.hook_installed {
+            self.hook_installed = integrator::try_install_hook();
         }
 
-        // 2. 起動時の中央配置
-        // eframeの初期化が完全に終わるまで2フレームスキップし、その後成功するまでリトライ
+        // 2. 外部（二重起動）および D&D からのメッセージを安全に一括処理
+        let mut path_to_open = None;
+        let mut should_focus = false;
+
+        // IPCチャネルからパスを受信
+        while let Ok(req) = self.path_rx.try_recv() {
+            let (path, is_external) = req;
+            path_to_open = Some(path);
+            if is_external { should_focus = true; }
+        }
+
+        // D&D の検知：IPCメッセージがない場合のみ、現在のフレームのドロップを確認
+        // 複数のドロップファイルがある場合、最初の1つだけを処理する
+        if path_to_open.is_none() {
+            if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone())) {
+                path_to_open = Some(path);
+            }
+        }
+
+        // 通信イベントが終わった後の「この場所」で初めて重い処理を実行する
+        if let Some(path) = path_to_open {
+            // ロード中でなく、かつ新しいパスである場合のみ実行（重複処理によるスタック破壊を防止）
+            let is_new = !self.is_loading_archive && self.manager.archive_path.as_ref().map_or(true, |p| p != &path);
+            if is_new {
+                if should_focus {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                }
+                self.open_path(path, ctx);
+            }
+        }
+
+        // 3. 起動時の中央配置
+        // 成功するまで EnumWindows が走り続けるのを防ぐため、回数制限を設ける
         if self.config.window_centered && !self.applied_initial_center {
             self.initial_center_frame = self.initial_center_frame.saturating_add(1);
-            if self.initial_center_frame >= 3 {
+            if self.initial_center_frame >= 3 && self.initial_center_frame < 10 { // 10フレームまで試行
                 if window::move_to_center(ctx, self.config.window_width, self.config.window_height) {
                     self.applied_initial_center = true;
                 }
             }
         }
 
-        let dropped: Option<PathBuf> = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.as_ref().cloned()));
-        if let Some(path) = dropped {
-            self.open_path(path, ctx);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        }
-
+        // 4. ウィンドウクローズ要求時の設定保存
         if ctx.input(|i| i.viewport().close_requested()) {
             self.save_config();
         }
 
-        // 3. 内部状態の更新
+        // 5. 内部状態の更新
         self.update_title(ctx);
         window::sync_config_with_window(ctx, &mut self.config, self.last_resize_time);
         self.view.is_maximized = self.config.window_maximized;
         self.handle_debug_logging(ctx);
         self.process_manager_update(ctx);
 
-        // 4. 入力処理
+        // 6. 入力処理
         let k = input::gather_input(ctx, &self.config);
         self.handle_input(ctx, &k);
 
-        // 5. 描画
+        // 7. 描画
         self.draw_ui(ctx);
 
-        // 6. マウス入力（draw_ui 後に処理: 描画でポップアップが開いた同フレームも正しくガードできる）
+        // 8. マウス入力（draw_ui 後に処理: 描画でポップアップが開いた同フレームも正しくガードできる）
         {
             let is_typing    = ctx.wants_keyboard_input();
             let is_capturing = self.ui.capturing_key_for.is_some();

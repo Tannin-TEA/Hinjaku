@@ -1,5 +1,3 @@
-use eframe::egui;
-
 pub mod menu;
 pub mod toolbar;
 pub mod sidebar;
