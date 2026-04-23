@@ -698,6 +698,16 @@ impl App {
             return;
         }
 
+            // マウスが画像表示エリア（Backgroundレイヤー）以外にある場合は入力を無視する。
+            // 各パネルに .sense(click()) を追加したことで、パネル上では Background 以外のレイヤーが返るようになる。
+            if let Some(hover_pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                if let Some(layer) = ctx.layer_id_at(hover_pos) {
+                    if layer.order != egui::Order::Background {
+                        return;
+                    }
+                }
+            }
+
         // 小画面ボーダレス時、Alt + 左ドラッグでウィンドウを移動できるようにする
         // 単なる左クリック（ページ送り）と衝突しないよう、Altキーを必須にする
         if self.view.is_small_borderless && ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary) && i.modifiers.alt) {
@@ -734,14 +744,6 @@ impl App {
         } else {
             self.wheel_accumulator = 0.0;
         }
-
-        // クリックによるページ送り（UI操作中ではない場合のみ）
-        let (p_clicked, s_clicked) = ctx.input(|i| (
-            i.pointer.button_clicked(egui::PointerButton::Primary),
-            i.pointer.button_clicked(egui::PointerButton::Secondary),
-        ));
-        if p_clicked { self.go_next(ctx); }
-        if s_clicked && !self.is_mouse_gesture { self.go_prev(ctx); }
 
         // 右ボタンが離されたらジェスチャー状態をリセットする
         if !secondary_down {
@@ -869,7 +871,7 @@ impl App {
         self.draw_windows(ctx);
 
         let mut menu_act = None;
-        let mut tool_act = None;
+        let mut tool_act = None; // This will hold the action from the bottom toolbar
 
         if self.view.is_fullscreen || self.view.is_small_borderless {
             // ボーダレスモード：マウスホバーでオーバーレイ表示
@@ -884,8 +886,8 @@ impl App {
                 ctx.layer_id_at(p).map_or(false, |id| id.order == egui::Order::Foreground)
             });
 
-            // メニューとステータスバーはどちらかの条件が満たされたら両方表示
-            let show_overlay = in_menu_zone || in_status_zone || mouse_over_overlay;
+            // メニューが開いている（ポップアップがある）間も表示を維持する判定を追加
+            let show_overlay = in_menu_zone || in_status_zone || mouse_over_overlay || ctx.memory(|m| m.any_popup_open());
 
             let show_menu   = show_overlay;
             let show_status = show_overlay;
@@ -894,11 +896,11 @@ impl App {
                 egui::Area::new(egui::Id::new("menu_overlay"))
                     .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, 0.0))
                     .order(egui::Order::Foreground)
-                    .interactable(true)
+                    .interactable(true) // 内部のボタンが反応するために true が必要
                     .show(ctx, |ui| {
                         egui::Frame::menu(ui.style()).fill(ui.visuals().window_fill().linear_multiply(0.9)).show(ui, |ui| {
                             ui.set_width(screen_rect.width());
-                            let (act, _) = widgets::main_menu_bar_inner(ui, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
+                            let (act, _is_open) = widgets::main_menu_bar_inner(ui, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
                             menu_act = act;
                         });
                     });
@@ -907,7 +909,7 @@ impl App {
                 egui::Area::new(egui::Id::new("status_overlay"))
                     .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(0.0, 0.0))
                     .order(egui::Order::Foreground)
-                    .interactable(true)
+                    .interactable(true) // ツールバーのボタンが反応するために true が必要
                     .show(ctx, |ui| {
                         egui::Frame::menu(ui.style()).fill(ui.visuals().window_fill().linear_multiply(0.9)).show(ui, |ui| {
                             ui.set_width(screen_rect.width());
@@ -1080,7 +1082,16 @@ impl App {
             }
             let is_at_end = self.manager.current >= self.manager.entries.len().saturating_sub(2);
             let sec_down = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
-            let (_, act, eff_zoom, scroll_off, vp_origin) = painter::draw_main_area(ui, &self.manager, &self.view, self.config.manga_rtl, ctx, is_at_end, sec_down, self.pending_scroll);
+            let (resp, act, eff_zoom, scroll_off, vp_origin) = painter::draw_main_area(ui, &self.manager, &self.view, self.config.manga_rtl, ctx, is_at_end, sec_down, self.pending_scroll);
+
+            // 画像エリアが直接クリックされた場合のみページ移動を実行
+            if resp.clicked() {
+                self.go_next(ctx);
+            }
+            if resp.secondary_clicked() && !self.is_mouse_gesture {
+                self.go_prev(ctx);
+            }
+
             self.view.effective_zoom = eff_zoom;
             self.scroll_offset = scroll_off;
             self.viewport_origin = vp_origin;

@@ -1,4 +1,4 @@
-use eframe::egui::{self, RichText, Button, TopBottomPanel, menu};
+use eframe::egui::{self, RichText, Button, menu};
 use crate::config::{self, FilterMode, BackgroundMode};
 use crate::manager::Manager;
 use crate::types::ViewState;
@@ -13,8 +13,13 @@ pub fn main_menu_bar(
     show_tree: bool,
     show_debug: bool,
 ) -> (Option<ViewerAction>, bool) {
-    TopBottomPanel::top("top_panel").show(ctx, |ui| {
-        main_menu_bar_inner(ui, config, manager, view, show_tree, show_debug)
+    egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+        let inner_res = main_menu_bar_inner(ui, config, manager, view, show_tree, show_debug);
+        // パネルの横幅全体を「UI領域」として登録する。
+        // allocate_rect ではなく interact を使うことで、レイアウトを崩さず、ボタンのクリックも邪魔しません。
+        let rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), ui.min_rect().y_range());
+        ui.interact(rect, ui.id().with("click_guard"), egui::Sense::hover());
+        inner_res
     }).inner
 }
 
@@ -96,7 +101,9 @@ fn file_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager) -> O
         }
     });
     ui.separator();
-    if ui.button("終了").clicked() { action = Some(ViewerAction::Exit); }
+    if ui.button("終了").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::Exit);
+    }
     action
 }
 
@@ -201,8 +208,12 @@ fn folder_menu(ui: &mut egui::Ui, config: &config::Config) -> Option<ViewerActio
     if ui.button("次のフォルダ (PgDn)").clicked() { ui.close_menu(); action = Some(ViewerAction::GoNextDir); }
     ui.separator();
     ui.label("フォルダ移動時の設定:");
-    if ui.radio(!config.open_from_end, "先頭から開く").clicked() { action = Some(ViewerAction::SetOpenFromEnd(false)); }
-    if ui.radio(config.open_from_end, "末尾から開く").clicked() { action = Some(ViewerAction::SetOpenFromEnd(true)); }
+    if ui.radio(!config.open_from_end, "先頭から開く").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::SetOpenFromEnd(false));
+    }
+    if ui.radio(config.open_from_end, "末尾から開く").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::SetOpenFromEnd(true));
+    }
     action
 }
 

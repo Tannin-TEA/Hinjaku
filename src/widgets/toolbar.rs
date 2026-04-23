@@ -17,7 +17,11 @@ pub fn bottom_toolbar(
         .resizable(false)
         .min_height(22.0)
         .show(ctx, |ui| {
-            bottom_toolbar_inner(ui, manager, config, view, is_nav_locked)
+            let inner_res = bottom_toolbar_inner(ui, manager, config, view, is_nav_locked);
+            // メニューバーと同様、interact を使用して非侵襲的にクリック透過を防ぎます。
+            let rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), ui.min_rect().y_range());
+            ui.interact(rect, ui.id().with("click_guard"), egui::Sense::hover());
+            inner_res
         }).inner
 }
 

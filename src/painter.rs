@@ -53,7 +53,8 @@ pub fn draw_centered(
     let display_size = tex_size * scale;
     let area = egui::vec2(display_size.x.max(avail.x), display_size.y.max(avail.y));
     let off  = egui::vec2(((area.x - display_size.x)*0.5).max(0.0), ((area.y - display_size.y)*0.5).max(0.0));
-    let (rect, resp) = ui.allocate_exact_size(area, egui::Sense::drag());
+    // クリックとドラッグの両方を検知するように変更
+    let (rect, resp) = ui.allocate_exact_size(area, egui::Sense::click().union(egui::Sense::drag()));
     if resp.dragged() {
         ui.scroll_with_delta(resp.drag_delta());
     }
@@ -137,7 +138,8 @@ pub fn draw_main_area(
                 let total_w = (ds1.x + ds2.x).max(avail.x);
                 let total_h = ds1.y.max(ds2.y).max(avail.y);
                 
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(total_w, total_h), egui::Sense::drag());
+                // マンガモード側も同様に変更
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(total_w, total_h), egui::Sense::click().union(egui::Sense::drag()));
                 if resp.dragged() {
                     ui.scroll_with_delta(resp.drag_delta());
                 }
