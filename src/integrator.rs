@@ -124,7 +124,7 @@ pub fn setup_ipc_channels(ctx: &egui::Context) -> (mpsc::Sender<(PathBuf, bool)>
 /// 成功したら true を返す。
 #[cfg(target_os = "windows")]
 pub fn try_install_hook() -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, EnumWindows, GetWindowThreadProcessId, GetWindowRect};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, EnumWindows, GetWindowThreadProcessId, GetWindowRect, IsWindowVisible};
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
 
@@ -135,9 +135,9 @@ pub fn try_install_hook() -> bool {
             let s = &mut *(lparam as *mut Search);
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == s.pid {
+            // 自身のPIDかつ、可視ウィンドウで、ある程度のサイズがあるものを探す
+            if pid == s.pid && IsWindowVisible(hwnd) != 0 {
                 let mut rect: RECT = std::mem::zeroed();
-                // 自身のPIDかつ、ある程度のサイズがあるウィンドウをメインウィンドウとみなす
                 if GetWindowRect(hwnd, &mut rect) != 0 && (rect.right - rect.left) > 10 {
                     s.hwnd = hwnd;
                     return 0;

@@ -1252,7 +1252,8 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 1. WM_COPYDATA フックの遅延インストール
         // ウィンドウハンドルが確定するまで try_install_hook を呼び続ける
-        if !self.hook_installed {
+        // 起動直後の数フレームに限定して試行
+        if !self.hook_installed && ctx.input(|i| i.time) < 5.0 {
             self.hook_installed = integrator::try_install_hook();
         }
 

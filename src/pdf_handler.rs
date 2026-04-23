@@ -1,33 +1,40 @@
 use crate::error::{HinjakuError, Result};
 use crate::archive::ImageEntry;
 use std::path::Path;
+use std::sync::OnceLock;
 use pdfium_render::prelude::*;
 
-fn init_pdfium() -> Result<Pdfium> {
-    let library_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("./"));
+/// PDFium の DLL が存在するディレクトリの検索結果をキャッシュする。
+/// Pdfium 構造体自体は Sync ではないため、パスだけを共有する。
+static PDFIUM_PATH: OnceLock<std::result::Result<std::path::PathBuf, String>> = OnceLock::new();
 
-    // PDFium のバインディングを取得。
-    // OS の LoadLibrary キャッシュにより、同一プロセス内での 2 回目以降の呼び出しは高速です。
-    let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
-        library_path.to_str().unwrap_or("./"),
-    ))
-    .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")))
-    .map_err(|_| {
-        HinjakuError::Archive(
-            "pdfium.dll が見つからないか、読み込めません。\n\
-             公式: https://pdfium.googlesource.com/pdfium/\n\
-             DL先: https://github.com/bblanchon/pdfium-binaries".to_string()
-        )
-    })?;
+fn get_pdfium() -> Result<Pdfium> {
+    let path_res = PDFIUM_PATH.get_or_init(|| {
+        let library_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("./"));
+
+        // 実際にロード可能か試行して、成功したパスを保存する
+        if Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(library_path.to_str().unwrap_or("./"))).is_ok() {
+            Ok(library_path)
+        } else if Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")).is_ok() {
+            Ok(std::path::PathBuf::from("./"))
+        } else {
+            Err("pdfium.dll が見つからないか、読み込めません。\n公式: https://pdfium.googlesource.com/pdfium/\nDL先: https://github.com/bblanchon/pdfium-binaries".to_string())
+        }
+    });
+
+    let path = path_res.as_ref().map_err(|e| HinjakuError::Archive(e.clone()))?;
+    let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(path.to_str().unwrap_or("./")))
+        .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")))
+        .map_err(|_| HinjakuError::Archive("PDFium binding failed".to_string()))?;
 
     Ok(Pdfium::new(bindings))
 }
 
 pub fn list_pdf(path: &Path) -> Result<Vec<ImageEntry>> {
-    let pdfium = init_pdfium()?;
+    let pdfium = get_pdfium()?;
     let document = pdfium
         .load_pdf_from_file(path, None)
         .map_err(|e| HinjakuError::Archive(format!("PDF load error: {e}")))?;
@@ -53,7 +60,7 @@ pub fn list_pdf(path: &Path) -> Result<Vec<ImageEntry>> {
 }
 
 pub fn read_pdf(path: &Path, page_index: Option<usize>, dpi: u32) -> Result<Vec<u8>> {
-    let pdfium = init_pdfium()?;
+    let pdfium = get_pdfium()?;
     let document = pdfium
         .load_pdf_from_file(path, None)
         .map_err(|e| HinjakuError::Archive(format!("PDF load error: {e}")))?;
