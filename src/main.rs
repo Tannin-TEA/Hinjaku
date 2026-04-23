@@ -22,32 +22,29 @@ mod toast;
 mod wic;
 
 fn main() -> eframe::Result<()> {
-    // 1. 引数解析
-    let (config_name, path_arg, debug_cli, renderer_override, pro_mode) = startup::parse_args(&std::env::args().collect::<Vec<_>>());
+    let args: Vec<String> = std::env::args().collect();
+    let (config_name, path_arg, debug_cli, renderer_override, pro_mode) = startup::parse_args(&args);
 
-    if debug_cli {
-        startup::setup_console();
-    }
-
-    // 2. 設定読み込み (INI対応)
+    // 1. Mutexチェックと二重起動時の自決 (GUI初期化前)
     let (mut config, config_path) = config::load_config_file(config_name.as_deref());
-
-    // コマンドライン引数によるレンダラーの強制上書き
-    if let Some(r) = renderer_override {
-        config.renderer = if r == "wgpu" { config::RendererMode::Wgpu } else { config::RendererMode::Glow };
-    }
-
-    // 3. 二重起動防止 (integrator への分離)
     let mut _mutex_handle = 0isize;
     if !config.allow_multiple_instances {
         if let Some(h) = startup::check_single_instance() {
             _mutex_handle = h;
         } else {
+            // プロセスAが見つかれば引数を投げて終了
             if let Some(path) = path_arg {
                 integrator::send_path_via_wm_copydata(&path);
             }
-            return Ok(());
+            std::process::exit(0);
         }
+    }
+
+    if debug_cli { startup::setup_console(); }
+
+    // コマンドライン引数によるレンダラーの強制上書き
+    if let Some(r) = renderer_override {
+        config.renderer = if r == "wgpu" { config::RendererMode::Wgpu } else { config::RendererMode::Glow };
     }
 
     let title = startup::build_window_title(config_name.as_deref(), &config.renderer, pro_mode);

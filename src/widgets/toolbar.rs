@@ -73,8 +73,7 @@ pub fn bottom_toolbar_inner(
             }
             ui.separator();
 
-            if has {
-                let meta = &manager.entries_meta[manager.target_index];
+            if let Some(meta) = manager.entries_meta.get(manager.target_index) {
                 let name = utils::get_display_name(std::path::Path::new(&meta.name));
                 let size = utils::format_size(meta.size);
                 let date = utils::format_timestamp(meta.mtime);

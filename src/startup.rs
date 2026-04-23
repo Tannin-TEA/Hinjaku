@@ -81,4 +81,14 @@ pub fn setup_console() {
             windows_sys::Win32::System::Console::AllocConsole();
         }
     }
+
+    // パニック発生時にコンソールが即座に閉じるのを防ぐフックを設定
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        default_hook(panic_info);
+        eprintln!("\n--- APPLICATION PANIC ---");
+        eprintln!("アプリケーションが異常終了しました。Enterキーを押すとこのウィンドウを閉じます...");
+        let mut s = String::new();
+        let _ = std::io::stdin().read_line(&mut s);
+    }));
 }

@@ -13,49 +13,25 @@ const HJK_COPYDATA_ID: usize = 0x484A4B; // "HJK"
 /// WM_COPYDATA を使って既存のウィンドウにパスを送信する
 pub fn send_path_via_wm_copydata(path: &Path) {
     #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COPYDATA, EnumWindows, GetWindowTextW, GetWindowThreadProcessId};
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COPYDATA, FindWindowW};
         use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
-        use windows_sys::Win32::Foundation::{HWND, LPARAM};
-        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
-        struct Target { hwnd: HWND, found: bool, self_pid: u32 }
-        let mut target = Target { hwnd: std::ptr::null_mut(), found: false, self_pid: unsafe { GetCurrentProcessId() } };
+        // 1. "Hinjaku" で始まるクラスまたはタイトルを検索
+        // ※ eframe/winit のデフォルト動作に合わせてタイトルで検索
+        let title_wide: Vec<u16> = "Hinjaku\0".encode_utf16().collect();
+        let hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
 
-        // Hinjakuで始まるタイトルのウィンドウを列挙して探す
-        unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
-            let target = &mut *(lparam as *mut Target);
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == target.self_pid { return 1; } // 自分自身はスキップ
-
-            let mut text = [0u16; 512];
-            let len = GetWindowTextW(hwnd, text.as_mut_ptr(), 512);
-            if len > 0 {
-                let title = String::from_utf16_lossy(&text[..len as usize]);
-                if title.starts_with("Hinjaku") {
-                    target.hwnd = hwnd;
-                    target.found = true;
-                    return 0; // 中断
-                }
-            }
-            1 // 続行
-        }
-
-        unsafe {
-            EnumWindows(Some(enum_proc), &mut target as *mut _ as _);
-
-            if target.found {
-                // 既存プロセスへ送るパスをクリーンな文字列として確定
-                let path_str = crate::utils::to_clean_string(path);
+        if !hwnd.is_null() {
+            let path_str = crate::utils::to_clean_string(path);
+            if !path_str.is_empty() {
                 let path_u16: Vec<u16> = std::ffi::OsStr::new(&path_str).encode_wide().collect();
-
                 let cds = COPYDATASTRUCT {
                     dwData: HJK_COPYDATA_ID,
                     cbData: (path_u16.len() * 2) as u32, // バイト数なので2倍
                     lpData: path_u16.as_ptr() as *mut _,
                 };
-                SendMessageW(target.hwnd, WM_COPYDATA, 0, &cds as *const _ as _);
+                SendMessageW(hwnd, WM_COPYDATA, 0, &cds as *const _ as _);
             }
         }
     }
@@ -70,25 +46,43 @@ unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, m
     use windows_sys::Win32::UI::WindowsAndMessaging::{WM_COPYDATA, CallWindowProcW};
     use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
     use std::mem::transmute;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
-    if msg == WM_COPYDATA {
-        let cds = lparam as *const COPYDATASTRUCT;
-        if !cds.is_null() && (*cds).dwData == HJK_COPYDATA_ID {
-            // 受信したバイナリを UTF-16 スライスとして解釈
-            let len = ((*cds).cbData / 2) as usize;
-            let u16_slice = std::slice::from_raw_parts((*cds).lpData as *const u16, len);
-            let os_str = std::ffi::OsString::from_wide(u16_slice);
-            if let Some(tx) = GLOBAL_TX.get() {
-                let _ = tx.send(PathBuf::from(os_str));
-                // OSメッセージを受け取った瞬間に egui を叩き起こして update を走らせる
-                if let Some(ctx) = GLOBAL_CTX.get() {
-                    ctx.request_repaint();
+    // パニックが FFI 境界（OS側）に漏れないよう防壁を設置
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if msg == WM_COPYDATA {
+            let cds = lparam as *const COPYDATASTRUCT;
+            if !cds.is_null() && (*cds).dwData == HJK_COPYDATA_ID {
+                let len = ((*cds).cbData / 2) as usize;
+                if len > 0 && !(*cds).lpData.is_null() {
+                    // 受信したバイナリを UTF-16 スライスとして安全に解釈
+                    let u16_slice = std::slice::from_raw_parts((*cds).lpData as *const u16, len);
+                    let os_str = std::ffi::OsString::from_wide(u16_slice);
+                    if let Some(tx) = GLOBAL_TX.get() {
+                        let _ = tx.send(PathBuf::from(os_str));
+                        if let Some(ctx) = GLOBAL_CTX.get() {
+                            ctx.request_repaint();
+                        }
+                    }
                 }
+                return Some(1); // 処理済み(TRUE)
             }
-            return 1;
+        }
+        None
+    }));
+
+    match result {
+        Ok(Some(ret)) => ret, // 正常に処理された場合
+        Ok(None) => {
+            // メッセージが WM_COPYDATA 以外なら元のプロシージャを呼ぶ
+            CallWindowProcW(transmute(OLD_WNDPROC.load(Ordering::SeqCst)), hwnd, msg, wparam, lparam)
+        }
+        Err(e) => {
+            // パニック発生時。標準エラーに内容を出し、安全に 0 (FALSE) を返して終了
+            eprintln!("Hinjaku integration error: Panic detected in WndProc. Unwind aborted. {:?}", e);
+            0
         }
     }
-    CallWindowProcW(transmute(OLD_WNDPROC.load(Ordering::SeqCst)), hwnd, msg, wparam, lparam)
 }
 
 /// Windowsメッセージをフックしてパス受信を待機する

@@ -487,7 +487,14 @@ impl Manager {
         // 暫定的にパスだけ設定し、リストは update で受け取る
         self.archive_path = Some(base_path);
         if let Some(name) = start_name {
+            let meta = archive::ImageEntry {
+                name: name.clone(),
+                mtime: 0,
+                size: 0,
+                archive_index: 0,
+            };
             self.entries = vec![name.clone()]; // ロード中の表示用
+            self.entries_meta = vec![meta];
             self.pending_focus = Some(name);
         }
     }
