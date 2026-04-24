@@ -12,14 +12,11 @@ pub fn main_menu_bar(
     view: &ViewState,
     show_tree: bool,
     show_debug: bool,
-) -> (Option<ViewerAction>, bool) {
+) -> Option<ViewerAction> {
     egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-        let inner_res = main_menu_bar_inner(ui, config, manager, view, show_tree, show_debug);
-        // パネルの横幅全体を「UI領域」として登録する。
-        // allocate_rect ではなく interact を使うことで、レイアウトを崩さず、ボタンのクリックも邪魔しません。
         let rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), ui.min_rect().y_range());
         ui.interact(rect, ui.id().with("click_guard"), egui::Sense::hover());
-        inner_res
+        main_menu_bar_inner(ui, config, manager, view, show_tree, show_debug)
     }).inner
 }
 
@@ -30,27 +27,22 @@ pub fn main_menu_bar_inner(
     view: &ViewState,
     show_tree: bool,
     show_debug: bool,
-) -> (Option<ViewerAction>, bool) {
+) -> Option<ViewerAction> {
     let mut action = None;
-    let mut menu_open = false;
     menu::bar(ui, |ui| {
         let r = ui.menu_button("ファイル",  |ui| { ui.set_min_width(220.0); file_menu(ui, config, manager) });
-        if r.inner.is_some() { menu_open = true; }
         if let Some(act) = r.inner.flatten() { action = Some(act); }
 
         let r = ui.menu_button("表示",     |ui| { ui.set_min_width(220.0); view_menu(ui, config, manager, view, show_tree) });
-        if r.inner.is_some() { menu_open = true; }
         if let Some(act) = r.inner.flatten() { action = Some(act); }
 
         let r = ui.menu_button("フォルダ", |ui| { ui.set_min_width(220.0); folder_menu(ui, config) });
-        if r.inner.is_some() { menu_open = true; }
         if let Some(act) = r.inner.flatten() { action = Some(act); }
 
         let r = ui.menu_button("オプション", |ui| { ui.set_min_width(220.0); option_menu(ui, config, show_debug) });
-        if r.inner.is_some() { menu_open = true; }
         if let Some(act) = r.inner.flatten() { action = Some(act); }
     });
-    (action, menu_open)
+    action
 }
 
 fn file_menu(ui: &mut egui::Ui, config: &config::Config, manager: &Manager) -> Option<ViewerAction> {
@@ -226,10 +218,6 @@ fn option_menu(ui: &mut egui::Ui, config: &config::Config, show_debug: bool) -> 
     if ui.button("リミッター設定...").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenLimiterSettings); }
     if ui.button("キーコンフィグ...").clicked() { ui.close_menu(); action = Some(ViewerAction::OpenKeyConfig); }
     if ui.selectable_label(show_debug, "デバッグ情報...").clicked() { ui.close_menu(); action = Some(ViewerAction::ToggleDebug); }
-    ui.separator();
-    ui.label("レンダラー (再起動要):");
-    if ui.selectable_label(config.renderer == config::RendererMode::Glow, "OpenGL (軽量)").clicked() { ui.close_menu(); action = Some(ViewerAction::SetRenderer(config::RendererMode::Glow)); }
-    if ui.selectable_label(config.renderer == config::RendererMode::Wgpu, "WGPU (互換性)").clicked() { ui.close_menu(); action = Some(ViewerAction::SetRenderer(config::RendererMode::Wgpu)); }
     ui.separator();
     if ui.button("このソフトについて...").clicked() { ui.close_menu(); action = Some(ViewerAction::About); }
     action

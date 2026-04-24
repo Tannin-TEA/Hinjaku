@@ -336,7 +336,7 @@ impl Manager {
                                 let go_last = self.pending_go_last;
                                 self.pending_go_last = false;
                                 if let Some(focus) = self.pending_focus.take() {
-                                    self.current = self.entries.iter().position(|n| n.contains(&focus)).unwrap_or(0);
+                                    self.current = self.entries.iter().position(|n| n == &focus).unwrap_or(0);
                                 } else {
                                     self.current = if go_last {
                                         let last = self.entries.len().saturating_sub(1);

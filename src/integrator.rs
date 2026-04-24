@@ -1,162 +1,142 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicIsize, Ordering};
 use eframe::egui;
 
 #[cfg(target_os = "windows")]
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStringExt;
 
-/// Hinjakuであることを識別するための定数
-const HJK_COPYDATA_ID: usize = 0x484A4B; // "HJK"
+/// 既存インスタンスと通信するための名前付きパイプ名
+const PIPE_NAME: &str = r"\\.\pipe\Hinjaku-IPC-5e2d9a3f";
 
-/// WM_COPYDATA を使って既存のウィンドウにパスを送信する
-pub fn send_path_via_wm_copydata(path: &Path) {
+/// 名前付きパイプでパスを既存インスタンスに送り、ウィンドウを前面に出す
+pub fn send_path_to_existing_instance(path: &Path) {
     #[cfg(target_os = "windows")]
     unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COPYDATA, EnumWindows, GetWindowTextW};
-        use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
-        use windows_sys::Win32::Foundation::{HWND, LPARAM};
+        use windows_sys::Win32::Storage::FileSystem::{CreateFileW, WriteFile, OPEN_EXISTING};
+        use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+        use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, CloseHandle, HWND, LPARAM};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, SetForegroundWindow, IsIconic, ShowWindow, SW_RESTORE};
 
-        struct Search { hwnd: HWND }
-        unsafe extern "system" fn find_hinjaku(hwnd: HWND, lparam: LPARAM) -> i32 {
-            let s = &mut *(lparam as *mut Search);
+        let path_str = crate::utils::to_clean_string(path);
+        if path_str.is_empty() { return; }
+
+        // 1. 名前付きパイプでパスを送信
+        let pipe_name_w: Vec<u16> = PIPE_NAME.encode_utf16().chain(Some(0u16)).collect();
+        if WaitNamedPipeW(pipe_name_w.as_ptr(), 5000) != 0 {
+            let h = CreateFileW(
+                pipe_name_w.as_ptr(),
+                GENERIC_WRITE, 0,
+                std::ptr::null(), OPEN_EXISTING, 0,
+                std::ptr::null_mut(),
+            );
+            if h != INVALID_HANDLE_VALUE {
+                let bytes: Vec<u8> = path_str.encode_utf16()
+                    .flat_map(|c| c.to_le_bytes())
+                    .collect();
+                let mut written = 0u32;
+                if WriteFile(h, bytes.as_ptr().cast(), bytes.len() as u32, &mut written, std::ptr::null_mut()) == 0 {
+                    eprintln!("[Hinjaku IPC] パスの送信に失敗しました");
+                }
+                CloseHandle(h);
+            } else {
+                eprintln!("[Hinjaku IPC] パイプへの接続に失敗しました");
+            }
+        } else {
+            eprintln!("[Hinjaku IPC] 既存インスタンスのパイプが見つかりません (タイムアウト)");
+        }
+
+        // 2. 既存ウィンドウを前面に出す（第2プロセスはフォアグラウンドにいるため SetForegroundWindow が有効）
+        struct S { hwnd: HWND }
+        unsafe extern "system" fn find_hinjaku(hwnd: HWND, lp: LPARAM) -> i32 {
+            let s = &mut *(lp as *mut S);
             let mut buf = [0u16; 512];
             let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), 512);
-            if len > 0 {
-                // null文字を除去して解釈
-                let title = String::from_utf16_lossy(&buf[..len as usize]);
-                if title.starts_with("Hinjaku") {
-                    s.hwnd = hwnd;
-                    return 0; // 見つかったので中断
-                }
+            if len > 0 && String::from_utf16_lossy(&buf[..len as usize]).starts_with("Hinjaku") {
+                s.hwnd = hwnd;
+                return 0;
             }
-            1 // 続行
+            1
         }
-        let mut s = Search { hwnd: std::ptr::null_mut() };
+        let mut s = S { hwnd: std::ptr::null_mut() };
         EnumWindows(Some(find_hinjaku), &mut s as *mut _ as LPARAM);
-        let hwnd = s.hwnd;
-
-        if !hwnd.is_null() {
-            let path_str = crate::utils::to_clean_string(path);
-            if !path_str.is_empty() {
-                let path_u16: Vec<u16> = std::ffi::OsStr::new(&path_str).encode_wide().collect();
-                let cds = COPYDATASTRUCT {
-                    dwData: HJK_COPYDATA_ID,
-                    cbData: (path_u16.len() * 2) as u32, // バイト数なので2倍
-                    lpData: path_u16.as_ptr() as *mut _,
-                };
-                SendMessageW(hwnd, WM_COPYDATA, 0, &cds as *const _ as _);
-            }
+        if !s.hwnd.is_null() {
+            if IsIconic(s.hwnd) != 0 { ShowWindow(s.hwnd, SW_RESTORE); }
+            SetForegroundWindow(s.hwnd);
         }
     }
 }
-/// 外部からのパスを受け取るためのチャネル。PathBuf と、それが外部プロセスからのものか (true) どうか (false) を送る。
-static GLOBAL_TX: OnceLock<mpsc::Sender<(PathBuf, bool)>> = OnceLock::new();
-static GLOBAL_CTX: OnceLock<egui::Context> = OnceLock::new();
-static OLD_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn wnd_proc(hwnd: windows_sys::Win32::Foundation::HWND, msg: u32, wparam: windows_sys::Win32::Foundation::WPARAM, lparam: windows_sys::Win32::Foundation::LPARAM) -> windows_sys::Win32::Foundation::LRESULT {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_COPYDATA, CallWindowProcW};
-    use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
-    use std::mem::transmute;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+/// 名前付きパイプサーバーをバックグラウンドスレッドで起動する。
+/// 受信したパスは tx へ送り、ctx で再描画を要求する。
+fn start_pipe_server(tx: mpsc::Sender<(PathBuf, bool)>, ctx: egui::Context) {
+    #[cfg(target_os = "windows")]
+    {
+        std::thread::spawn(move || {
+            use windows_sys::Win32::System::Pipes::{
+                CreateNamedPipeW, ConnectNamedPipe, DisconnectNamedPipe,
+                PIPE_TYPE_MESSAGE, PIPE_READMODE_MESSAGE, PIPE_WAIT,
+            };
+            use windows_sys::Win32::Storage::FileSystem::{ReadFile, PIPE_ACCESS_INBOUND};
+            use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, GetLastError, ERROR_PIPE_CONNECTED};
 
-    // パニックが FFI 境界（OS側）に漏れないよう防壁を設置
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        if msg == WM_COPYDATA {
-            let cds = lparam as *const COPYDATASTRUCT;
-            if !cds.is_null() && (*cds).dwData == HJK_COPYDATA_ID {
-                let len = ((*cds).cbData / 2) as usize;
-                if len > 0 && !(*cds).lpData.is_null() {
-                    // 受信したバイナリを UTF-16 スライスとして安全に解釈
-                    let u16_slice = std::slice::from_raw_parts((*cds).lpData as *const u16, len);
-                    let os_str = std::ffi::OsString::from_wide(u16_slice);
-                    if let Some(tx) = GLOBAL_TX.get() { // WM_COPYDATA は外部からのパスなので true
-                        let _ = tx.send((PathBuf::from(os_str), true));
-                        if let Some(ctx) = GLOBAL_CTX.get() {
+            let pipe_name_w: Vec<u16> = PIPE_NAME.encode_utf16().chain(Some(0u16)).collect();
+
+            loop {
+                let pipe = unsafe {
+                    CreateNamedPipeW(
+                        pipe_name_w.as_ptr(),
+                        PIPE_ACCESS_INBOUND,
+                        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                        255,  // 最大インスタンス数
+                        0, 8192, 0,
+                        std::ptr::null(),
+                    )
+                };
+                if pipe == INVALID_HANDLE_VALUE {
+                    eprintln!("[Hinjaku IPC] CreateNamedPipeW 失敗、再試行...");
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    continue;
+                }
+
+                // クライアントの接続を待つ（ブロッキング）
+                let connected = unsafe {
+                    ConnectNamedPipe(pipe, std::ptr::null_mut()) != 0
+                        || GetLastError() == ERROR_PIPE_CONNECTED
+                };
+
+                if connected {
+                    let mut buf = [0u8; 8192];
+                    let mut read = 0u32;
+                    let ok = unsafe {
+                        ReadFile(pipe, buf.as_mut_ptr().cast(), buf.len() as u32, &mut read, std::ptr::null_mut())
+                    };
+                    if ok != 0 && read >= 2 && read % 2 == 0 {
+                        let words: &[u16] = unsafe {
+                            std::slice::from_raw_parts(buf.as_ptr().cast(), (read / 2) as usize)
+                        };
+                        let path = PathBuf::from(std::ffi::OsString::from_wide(words));
+                        if tx.send((path, true)).is_ok() {
                             ctx.request_repaint();
                         }
                     }
                 }
-                return Some(1); // 処理済み(TRUE)
-            }
-        }
-        None
-    }));
 
-    match result {
-        Ok(Some(ret)) => ret, // 正常に処理された場合
-        Ok(None) => {
-            // メッセージが WM_COPYDATA 以外なら元のプロシージャを呼ぶ
-            CallWindowProcW(transmute(OLD_WNDPROC.load(Ordering::SeqCst)), hwnd, msg, wparam, lparam)
-        }
-        Err(e) => {
-            // パニック発生時。標準エラーに内容を出し、安全に 0 (FALSE) を返して終了
-            eprintln!("Hinjaku integration error: Panic detected in WndProc. Unwind aborted. {:?}", e);
-            0
-        }
-    }
-}
-
-/// IPC (WM_COPYDATA) および D&D イベントを処理するためのチャネルをセットアップし、
-/// Windowsメッセージフックをインストールする。
-///
-/// 戻り値: (Sender, Receiver) - Sender は D&D イベントを内部から送るために使用し、Receiver は全てのパスイベントを受け取る。
-pub fn setup_ipc_channels(ctx: &egui::Context) -> (mpsc::Sender<(PathBuf, bool)>, Receiver<(PathBuf, bool)>) {
-    let (tx, rx) = mpsc::channel();
-    
-    // OnceLock への値のセット (.set() を使用)
-    let _ = GLOBAL_TX.set(tx.clone());
-    let _ = GLOBAL_CTX.set(ctx.clone());
-
-    #[cfg(target_os = "windows")]
-    {
-        // フックのインストールは、ウィンドウハンドルが確定してから行う必要があるため、
-        // `try_install_hook` を別途用意し、App::update で毎フレーム試行する。
-        // ここではチャネルのセットアップのみ。
-    }
-    (tx, rx)
-}
-
-/// Windowsメッセージをフックする。ウィンドウハンドルが取得できたら一度だけ成功する。
-/// 成功したら true を返す。
-#[cfg(target_os = "windows")]
-pub fn try_install_hook() -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, EnumWindows, GetWindowThreadProcessId, GetWindowRect, IsWindowVisible};
-    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
-
-    unsafe {
-        let target_pid = GetCurrentProcessId();
-        struct Search { pid: u32, hwnd: HWND }
-        unsafe extern "system" fn find_own_window(hwnd: HWND, lparam: LPARAM) -> i32 {
-            let s = &mut *(lparam as *mut Search);
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            // 自身のPIDかつ、可視ウィンドウで、ある程度のサイズがあるものを探す
-            if pid == s.pid && IsWindowVisible(hwnd) != 0 {
-                let mut rect: RECT = std::mem::zeroed();
-                if GetWindowRect(hwnd, &mut rect) != 0 && (rect.right - rect.left) > 10 {
-                    s.hwnd = hwnd;
-                    return 0;
+                unsafe {
+                    DisconnectNamedPipe(pipe);
+                    CloseHandle(pipe);
                 }
             }
-            1
-        }
-        let mut s = Search { pid: target_pid, hwnd: std::ptr::null_mut() };
-        EnumWindows(Some(find_own_window), &mut s as *mut _ as LPARAM);
-
-        if s.hwnd.is_null() { return false; }
-        let hwnd = s.hwnd;
-
-        // 既にフック済みかチェック (OLD_WNDPROC が 0 でないならフック済み)
-        if OLD_WNDPROC.load(Ordering::SeqCst) != 0 { return true; }
-        OLD_WNDPROC.store(GetWindowLongPtrW(hwnd, GWLP_WNDPROC), Ordering::SeqCst);
-        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc as *const () as isize);
-        true
+        });
     }
+}
+
+/// D&D および IPC パスイベントのチャネルをセットアップし、パイプサーバーを起動する。
+///
+/// 戻り値: (Sender, Receiver) — Sender は D&D を内部から送るために使用
+pub fn setup_ipc_channels(ctx: &egui::Context) -> (mpsc::Sender<(PathBuf, bool)>, Receiver<(PathBuf, bool)>) {
+    let (tx, rx) = mpsc::channel();
+    start_pipe_server(tx.clone(), ctx.clone());
+    (tx, rx)
 }
 
 /// 外部アプリを起動する

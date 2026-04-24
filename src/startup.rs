@@ -1,11 +1,10 @@
 use std::path::PathBuf;
 
-/// コマンドライン引数を解析して (INI名, 対象パス, デバッグフラグ, レンダラー上書き, proモード) を返す
-pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>, bool, Option<String>, bool) {
+/// コマンドライン引数を解析して (INI名, 対象パス, デバッグフラグ, proモード) を返す
+pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>, bool, bool) {
     let mut config_name = None;
     let mut path_arg = None;
     let mut debug_mode = false;
-    let mut renderer_override = None;
     let mut pro_mode = false;
     let mut i = 1;
     while i < args.len() {
@@ -20,14 +19,6 @@ pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>, bool, Op
                 debug_mode = true;
                 i += 1;
             }
-            "-W" => {
-                renderer_override = Some("wgpu".to_string());
-                i += 1;
-            }
-            "-O" => {
-                renderer_override = Some("glow".to_string());
-                i += 1;
-            }
             "-pro" => {
                 pro_mode = true;
                 i += 1;
@@ -39,7 +30,7 @@ pub fn parse_args(args: &[String]) -> (Option<String>, Option<PathBuf>, bool, Op
             _ => i += 1,
         }
     }
-    (config_name, path_arg, debug_mode, renderer_override, pro_mode)
+    (config_name, path_arg, debug_mode, pro_mode)
 }
 
 /// Windows環境での二重起動防止チェック
@@ -60,17 +51,14 @@ pub fn check_single_instance() -> Option<isize> {
 }
 
 /// ウィンドウタイトルを構築する (例: "Hinjaku - ProMode - OpenGL {custom.ini}")
-pub fn build_window_title(config_name: Option<&str>, renderer: &crate::config::RendererMode, pro_mode: bool) -> String {
-    let renderer_str = match renderer {
-        crate::config::RendererMode::Glow => "OpenGL",
-        crate::config::RendererMode::Wgpu => "Wgpu",
-    };
+pub fn build_window_title(config_name: Option<&str>, pro_mode: bool, container_name: Option<&str>) -> String {
     let pro_part = if pro_mode { "ProMode - " } else { "" };
     let config_part = config_name
         .filter(|&n| n != "config.ini")
         .map(|n| format!(" {{{}}}", n))
         .unwrap_or_default();
-    format!("Hinjaku - {}{}{}", pro_part, renderer_str, config_part)
+    let container_part = container_name.map(|n| format!(" [{}]", n)).unwrap_or_default();
+    format!("Hinjaku - {}{}{}", pro_part, config_part, container_part)
 }
 
 /// WindowsのGUIアプリとして起動しつつ、起動元のコンソールに出力できるようにする

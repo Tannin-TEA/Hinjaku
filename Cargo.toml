@@ -8,7 +8,7 @@ name = "hinjaku"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.27", features = ["wgpu"] }
+eframe = { version = "0.27", default-features = false, features = ["wgpu", "accesskit", "default_fonts"] }
 egui = "0.27"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
 zip = { version = "2.1", default-features = false, features = ["deflate"] }

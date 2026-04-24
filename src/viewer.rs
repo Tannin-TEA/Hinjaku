@@ -1,4 +1,4 @@
-use crate::{archive, integrator, window, shell, toast, config::{self, Config}, manager::{self, Manager}, utils, painter, widgets, input};
+use crate::{archive, integrator, window, shell, toast, config::{self, Config}, manager::{self, Manager}, utils, painter, widgets, input, startup};
 pub use crate::types::{DisplayMode, ViewState};
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, TextureHandle};
 use std::path::PathBuf;
@@ -72,7 +72,6 @@ pub struct App {
     scroll_offset:        egui::Vec2,
     viewport_origin:      egui::Pos2,
     pending_scroll:       Option<egui::Vec2>,
-    hook_installed:       bool, // WM_COPYDATAフックがインストールされたか
 }
 
 impl App {
@@ -167,7 +166,6 @@ impl App {
             scroll_offset:          egui::Vec2::ZERO,
             viewport_origin:        egui::Pos2::ZERO,
             pending_scroll:         None,
-            hook_installed:         false, // 初期状態ではフックはインストールされていない
         };
 
         if let Some(path) = initial_path {
@@ -306,21 +304,12 @@ impl App {
         self.last_archive_path = self.manager.archive_path.clone();
         self.last_title_update_time = now;
 
-        let renderer_str = match self.config.renderer {
-            config::RendererMode::Glow => "OpenGL",
-            config::RendererMode::Wgpu => "Wgpu",
-        };
-        let pro_part = if self.pro_mode { "ProMode - " } else { "" };
-        let config_part = self.config_path.as_ref()
-            .and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
-            .filter(|n| n != "config.ini").map(|n| format!(" {{{}}}", n)).unwrap_or_default();
+        let config_name = self.config_path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy());
+        let container_name = self.manager.archive_path.as_ref().map(|p| utils::get_display_name(p));
+        let mut title = startup::build_window_title(config_name.as_deref(), self.pro_mode, container_name.as_deref());
+        title.push_str(&format!(" ({})", integrator::get_memory_usage_str()));
 
-        let container_name = self.manager.archive_path.as_ref()
-            .map(|p| format!(" [{}]", utils::get_display_name(p))).unwrap_or_default();
-
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-            format!("Hinjaku - {}{}{}{} ({})", pro_part, renderer_str, config_part, container_name, integrator::get_memory_usage_str())
-        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 
     // ── ページ移動ヘルパー ────────────────────────────────────────────────────
@@ -588,15 +577,12 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::F12) && i.modifiers.ctrl && i.modifiers.shift) {
             self.ui.boss_mode = !self.ui.boss_mode;
             if self.ui.boss_mode {
-                let renderer_str = match self.config.renderer {
-                    config::RendererMode::Glow => "OpenGL",
-                    config::RendererMode::Wgpu => "Wgpu",
-                };
-                let config_part = self.config_path.as_ref()
-                    .and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
-                    .filter(|n| n != "config.ini").map(|n| format!(" {{{}}}", n)).unwrap_or_default();
+                let config_name = self.config_path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy());
+                let mut title = startup::build_window_title(config_name.as_deref(), false, Some("Image-Folder"));
+                title.push_str(&format!(" ({})", integrator::get_memory_usage_str()));
+
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                    format!("Hinjaku - {}{} [Image-Folder] ({})", renderer_str, config_part, integrator::get_memory_usage_str())
+                    title
                 ));
             } else {
                 self.last_title_update_time = 0.0; // 次フレームで本来のタイトルに戻す
@@ -900,7 +886,7 @@ impl App {
                     .show(ctx, |ui| {
                         egui::Frame::menu(ui.style()).fill(ui.visuals().window_fill().linear_multiply(0.9)).show(ui, |ui| {
                             ui.set_width(screen_rect.width());
-                            let (act, _is_open) = widgets::main_menu_bar_inner(ui, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
+                            let act = widgets::main_menu_bar_inner(ui, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
                             menu_act = act;
                         });
                     });
@@ -918,7 +904,7 @@ impl App {
                     });
             }
         } else {
-            let (act, _) = widgets::main_menu_bar(ctx, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
+            let act = widgets::main_menu_bar(ctx, &self.config, &self.manager, &self.view, self.ui.show_tree, self.ui.show_debug);
             menu_act = act;
             tool_act = widgets::bottom_toolbar(ctx, &self.manager, &self.config, &self.view, self.is_nav_locked(ctx));
         }
@@ -1217,7 +1203,6 @@ impl App {
             ToggleMultipleInstances => { self.config.allow_multiple_instances = !self.config.allow_multiple_instances; self.save_config(); }
             ToggleDebug     => self.ui.show_debug = !self.ui.show_debug,
             About           => self.ui.show_about = true,
-            SetRenderer(m)  => { self.config.renderer = m; self.save_config(); self.add_toast("設定を反映するには再起動が必要です。".to_string(), ctx); }
             SetMouseAction(btn, act) => {
                 match btn {
                     3 => self.config.mouse_middle_action = act,
@@ -1261,14 +1246,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 1. WM_COPYDATA フックの遅延インストール
-        // ウィンドウハンドルが確定するまで try_install_hook を呼び続ける
-        // 起動直後の数フレームに限定して試行
-        if !self.hook_installed && ctx.input(|i| i.time) < 5.0 {
-            self.hook_installed = integrator::try_install_hook();
-        }
-
-        // 2. 外部（二重起動）および D&D からのメッセージを安全に一括処理
+        // 1. 外部（二重起動）および D&D からのメッセージを安全に一括処理
         let mut path_to_open = None;
         let mut should_focus = false;
 
@@ -1289,9 +1267,10 @@ impl eframe::App for App {
 
         // 通信イベントが終わった後の「この場所」で初めて重い処理を実行する
         if let Some(path) = path_to_open {
-            // ロード中でなく、かつ新しいパスである場合のみ実行（重複処理によるスタック破壊を防止）
-            let is_new = !self.is_loading_archive && self.manager.archive_path.as_ref().map_or(true, |p| p != &path);
-            if is_new {
+            // 外部からの要求、または新しいパスである場合のみ実行
+            let is_new = self.manager.archive_path.as_ref().map_or(true, |p| p != &path);
+            let is_ipc = should_focus;
+            if is_new || is_ipc {
                 if should_focus {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));

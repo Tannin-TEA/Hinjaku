@@ -43,7 +43,6 @@ pub enum ViewerAction {
     OpenSortSettings,
     ToggleMultipleInstances,
     ToggleDebug,
-    SetRenderer(crate::config::RendererMode),
     SetMouseAction(usize, String),
     SetPdfRenderSize(u32),
     TogglePdfWarning,

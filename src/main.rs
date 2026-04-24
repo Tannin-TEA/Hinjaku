@@ -23,10 +23,17 @@ mod wic;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let (config_name, path_arg, debug_cli, renderer_override, pro_mode) = startup::parse_args(&args);
+    let (config_name, mut path_arg, debug_cli, pro_mode) = startup::parse_args(&args);
+
+    // 他のプロセスへ渡す際や起動時に不整合が起きないよう、パスを絶対パスに変換
+    if let Some(p) = path_arg.as_ref() {
+        if let Ok(abs) = std::fs::canonicalize(p) {
+            path_arg = Some(abs);
+        }
+    }
 
     // 1. Mutexチェックと二重起動時の自決 (GUI初期化前)
-    let (mut config, config_path) = config::load_config_file(config_name.as_deref());
+    let (config, config_path) = config::load_config_file(config_name.as_deref());
     let mut _mutex_handle = 0isize;
     if !config.allow_multiple_instances {
         if let Some(h) = startup::check_single_instance() {
@@ -34,7 +41,7 @@ fn main() -> eframe::Result<()> {
         } else {
             // プロセスAが見つかれば引数を投げて終了
             if let Some(path) = path_arg {
-                integrator::send_path_via_wm_copydata(&path);
+                integrator::send_path_to_existing_instance(&path);
             }
             std::process::exit(0);
         }
@@ -42,12 +49,7 @@ fn main() -> eframe::Result<()> {
 
     if debug_cli { startup::setup_console(); }
 
-    // コマンドライン引数によるレンダラーの強制上書き
-    if let Some(r) = renderer_override {
-        config.renderer = if r == "wgpu" { config::RendererMode::Wgpu } else { config::RendererMode::Glow };
-    }
-
-    let title = startup::build_window_title(config_name.as_deref(), &config.renderer, pro_mode);
+    let title = startup::build_window_title(config_name.as_deref(), pro_mode, None);
 
     // 4. UI起動設定
     let mut viewport = egui::ViewportBuilder::default()
@@ -65,16 +67,12 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport,
-        // 設定に基づいてレンダラーを切り替える
-        renderer: if config.renderer == config::RendererMode::Wgpu {
-            eframe::Renderer::Wgpu
-        } else {
-            eframe::Renderer::Glow
-        },
+        renderer: eframe::Renderer::Wgpu,
         // 不要なバッファを無効化してメモリ消費を抑える
         multisampling: 0,
         depth_buffer: 0,
         stencil_buffer: 0,
+        // WGPUを使用する場合、ハードウェア加速を優先
         hardware_acceleration: eframe::HardwareAcceleration::Preferred,
         ..Default::default()
     };
