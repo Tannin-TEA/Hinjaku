@@ -1,5 +1,5 @@
 use crate::{archive, integrator, window, shell, toast, config::{self, Config}, manager::{self, Manager}, utils, painter, widgets, input, startup};
-pub use crate::types::{DisplayMode, ViewState};
+pub use crate::types::{DisplayMode, ViewState, WindowMode};
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, TextureHandle};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -65,6 +65,10 @@ pub struct App {
     toasts:               toast::ToastManager,
     path_tx:              std::sync::mpsc::Sender<(PathBuf, bool)>, // 内部D&DイベントをIPCチャネルに送る用
     path_rx:              Receiver<(PathBuf, bool)>, // IPCとD&Dイベントを受け取る用
+    ui_width_overhead:    f32,
+    ui_height_overhead:   f32,
+    target_display_w:     f32,
+    target_display_h:     f32,
     applied_initial_center: bool,
     initial_center_frame:  u8,
     pro_mode:             bool,
@@ -118,11 +122,16 @@ impl App {
             manager.display_max_dim = w.max(h).max(1920);
         }
 
-        if config.is_fullscreen {
-            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
-            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-        } else if config.is_small_borderless {
-            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+        // 起動時の初期モード適用
+        match config.window_mode {
+            WindowMode::Standard => {} // デフォルト
+            WindowMode::Borderless => {
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+            }
+            WindowMode::Fullscreen => {
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            }
         }
 
         if config.always_on_top {
@@ -140,8 +149,8 @@ impl App {
                 manga_mode: config.manga_mode,
                 manga_shift: false,
                 is_maximized: config.window_maximized,
-                is_fullscreen: config.is_fullscreen,
-                is_small_borderless: config.is_small_borderless,
+                window_mode: config.window_mode,
+                last_base_mode: if config.window_mode == WindowMode::Fullscreen { WindowMode::Standard } else { config.window_mode },
                 effective_zoom: 1.0,
             },
             config_path,
@@ -158,6 +167,10 @@ impl App {
             toasts:                 toast::ToastManager::new(),
             path_tx:                tx, // setup_ipc_channels から受け取った Sender
             path_rx:                rx, // setup_ipc_channels から受け取った Receiver
+            ui_width_overhead:      0.0,
+            ui_height_overhead:     0.0,
+            target_display_w:       0.0,
+            target_display_h:       0.0,
             applied_initial_center: false,
             initial_center_frame:   0,
             pro_mode,
@@ -444,54 +457,78 @@ impl App {
 
     // ── ウィンドウヘルパー ────────────────────────────────────────────────────
 
-    fn toggle_maximized(&mut self, ctx: &egui::Context) {
-        self.view.is_maximized = !self.view.is_maximized;
-        self.view.is_fullscreen = false;
-        self.view.is_small_borderless = false;
-        
-        self.config.is_fullscreen = false;
-        self.config.is_small_borderless = false;
+    fn set_window_mode(&mut self, mode: WindowMode, ctx: &egui::Context) {
+        let old_mode = self.view.window_mode;
+
+        // 全画面以外のモードに移行する場合は、それを「直前のベースモード」として記憶する
+        if mode != WindowMode::Fullscreen {
+            self.view.last_base_mode = mode;
+        }
+
+        self.view.window_mode = mode;
+        self.config.window_mode = mode;
         self.save_config();
 
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.view.is_maximized));
+        match mode {
+            WindowMode::Standard => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                // 標準モードに戻る際は最大化状態を復元
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.view.is_maximized));
+            }
+            WindowMode::Borderless => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.view.is_maximized));
+            }
+            WindowMode::Fullscreen => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false)); // フルスクリーン時は最大化解除
+            }
+        }
+
+        // モード切替後、target_display を維持するようウィンドウを再計算する
+        if !self.view.is_maximized && mode != WindowMode::Fullscreen {
+            self.apply_target_size(ctx);
+        }
+    }
+
+    fn toggle_maximized(&mut self, ctx: &egui::Context) {
+        if self.view.window_mode == WindowMode::Fullscreen {
+            // フルスクリーン時に Enter が押されたら、記憶していたベースモードに戻して最大化する
+            let base = self.view.last_base_mode;
+            self.view.is_maximized = true;
+            self.set_window_mode(base, ctx);
+        } else {
+            // 標準またはボーダレス時は、現在のModeを維持したまま最大化のみトグル
+            self.view.is_maximized = !self.view.is_maximized;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.view.is_maximized));
+        }
     }
 
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
-        self.view.is_fullscreen = !self.view.is_fullscreen;
-        self.view.is_maximized = false;
-        self.view.is_small_borderless = false;
-
-        self.config.is_fullscreen = self.view.is_fullscreen;
-        self.config.is_small_borderless = false;
-        self.save_config();
-
-        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.view.is_fullscreen));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.view.is_fullscreen));
+        let next_mode = if self.view.window_mode == WindowMode::Fullscreen {
+            // 全画面解除：記憶していた元のモード（標準 or ボーダレス）に戻す
+            self.view.last_base_mode
+        } else {
+            // 全画面化：現在のモードを記憶しつつ全画面へ
+            WindowMode::Fullscreen
+        };
+        self.set_window_mode(next_mode, ctx);
     }
 
-    fn toggle_small_borderless(&mut self, ctx: &egui::Context) {
-        self.view.is_small_borderless = !self.view.is_small_borderless;
-        self.view.is_fullscreen = false;
-
-        self.config.is_small_borderless = self.view.is_small_borderless;
-        self.config.is_fullscreen = false;
-        self.save_config();
-
-        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.view.is_small_borderless));
+    fn toggle_borderless(&mut self, ctx: &egui::Context) {
+        let next = if self.view.window_mode == WindowMode::Borderless { WindowMode::Standard } else { WindowMode::Borderless };
+        self.set_window_mode(next, ctx);
     }
 
-    fn exit_fullscreen(&mut self, ctx: &egui::Context) {
-        self.view.is_fullscreen = false;
-        self.view.is_small_borderless = false;
-
-        self.config.is_fullscreen = false;
-        self.config.is_small_borderless = false;
-        self.save_config();
-
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+    fn exit_to_base(&mut self, ctx: &egui::Context) {
+        // Fullscreen のときだけ元のモード（Standard/Borderless）に戻す
+        // Standard ↔ Borderless の切り替えは ESC では行わない
+        if self.view.window_mode == WindowMode::Fullscreen {
+            self.set_window_mode(self.view.last_base_mode, ctx);
+        }
     }
 
     fn toggle_always_on_top(&mut self, ctx: &egui::Context) {
@@ -508,11 +545,32 @@ impl App {
         self.save_config();
     }
 
-    fn resize_window(&mut self, ctx: &egui::Context, w: u32, h: u32) {
-        window::request_resize(ctx, w, h);
-        self.config.window_width = w as f32;
-        self.config.window_height = h as f32;
+    /// target_display_w/h を window サイズに変換してリサイズ命令を発行する
+    fn apply_target_size(&mut self, ctx: &egui::Context) {
+        if self.target_display_w <= 0.0 || self.target_display_h <= 0.0 { return; }
+        let (w, h) = match self.view.window_mode {
+            WindowMode::Standard   => (
+                self.target_display_w + self.ui_width_overhead,
+                self.target_display_h + self.ui_height_overhead,
+            ),
+            WindowMode::Borderless => (self.target_display_w, self.target_display_h),
+            WindowMode::Fullscreen => return,
+        };
+        window::request_resize(ctx, w as u32, h as u32);
         self.last_resize_time = ctx.input(|i| i.time);
+    }
+
+    fn resize_window(&mut self, ctx: &egui::Context, w: u32, h: u32) {
+        self.target_display_w = w as f32;
+        self.target_display_h = h as f32;
+        self.apply_target_size(ctx);
+        // sync_config_with_window はリサイズ中をガードするため、期待する合計サイズを先に保存する
+        let (tw, th) = match self.view.window_mode {
+            WindowMode::Standard => (w as f32 + self.ui_width_overhead, h as f32 + self.ui_height_overhead),
+            _                    => (w as f32, h as f32),
+        };
+        self.config.window_width  = tw;
+        self.config.window_height = th;
         self.save_config();
     }
 
@@ -565,13 +623,13 @@ impl App {
             if self.ui.show_tree {
                 self.handle_tree_navigation(ctx, k);
             } else {
-                if k.fullscreen { self.toggle_maximized(ctx); }
-                if k.borderless { self.toggle_fullscreen(ctx); }
-                if k.small_borderless { self.toggle_small_borderless(ctx); }
+                if k.toggle_maximized { self.toggle_maximized(ctx); }
+                if k.toggle_fullscreen { self.toggle_fullscreen(ctx); }
+                if k.toggle_borderless { self.toggle_borderless(ctx); }
                 self.handle_viewer_keys(ctx, k);
             }
         }
-        if !modal_open && k.esc { self.exit_fullscreen(ctx); }
+        if !modal_open && k.esc { self.exit_to_base(ctx); }
 
         // イースターエッグ: Ctrl+Shift+F12 固定（キーコンフィグ非公開）
         if ctx.input(|i| i.key_pressed(egui::Key::F12) && i.modifiers.ctrl && i.modifiers.shift) {
@@ -696,7 +754,7 @@ impl App {
 
         // 小画面ボーダレス時、Alt + 左ドラッグでウィンドウを移動できるようにする
         // 単なる左クリック（ページ送り）と衝突しないよう、Altキーを必須にする
-        if self.view.is_small_borderless && ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary) && i.modifiers.alt) {
+        if self.view.window_mode == WindowMode::Borderless && ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary) && i.modifiers.alt) {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             return; // 移動中は他の操作をさせない
         }
@@ -859,7 +917,7 @@ impl App {
         let mut menu_act = None;
         let mut tool_act = None; // This will hold the action from the bottom toolbar
 
-        if self.view.is_fullscreen || self.view.is_small_borderless {
+        if self.view.window_mode != WindowMode::Standard {
             // ボーダレスモード：マウスホバーでオーバーレイ表示
             let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
             let screen_rect = ctx.screen_rect();
@@ -1056,6 +1114,29 @@ impl App {
     fn draw_main_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             painter::paint_background(ui, ui.available_rect_before_wrap(), self.config.bg_mode);
+
+            // 表示エリアとUIオーバーヘッドの自動計測
+            let avail  = ui.available_size();
+            let screen = ctx.screen_rect().size();
+            let now        = ctx.input(|i| i.time);
+            let in_resize  = self.last_resize_time > 0.0 && now - self.last_resize_time < 0.5;
+
+            // Standard モードのときのみ overhead を更新
+            // （非 Standard ではメニューがオーバーレイになり avail≈screen になるため）
+            if self.view.window_mode == WindowMode::Standard {
+                self.ui_width_overhead  = (screen.x - avail.x).max(0.0);
+                self.ui_height_overhead = (screen.y - avail.y).max(0.0);
+            }
+
+            // リサイズ指示から 0.5 秒間は target を上書きしない（ウィンドウが実際に動くまで待つ）
+            if !in_resize {
+                match self.view.window_mode {
+                    WindowMode::Standard   => { self.target_display_w = avail.x;   self.target_display_h = avail.y; }
+                    WindowMode::Borderless => { self.target_display_w = screen.x;  self.target_display_h = screen.y; }
+                    WindowMode::Fullscreen => {}
+                }
+            }
+
             if let Some(err) = self.error.clone() {
                 ui.centered_and_justified(|ui| {
                     ui.label(egui::RichText::new(format!("エラー: {err}")).color(egui::Color32::RED));
@@ -1230,9 +1311,7 @@ impl App {
             }
             SetLimiterPageDuration(d) => { self.config.limiter_page_duration = d; self.save_config(); }
             SetLimiterFolderDuration(d) => { self.config.limiter_folder_duration = d; self.save_config(); }
-            ToggleFullscreen => self.toggle_maximized(ctx),
-            ToggleBorderless => self.toggle_fullscreen(ctx),
-            ToggleSmallBorderless => self.toggle_small_borderless(ctx),
+            SetWindowMode(mode) => self.set_window_mode(mode, ctx),
             Exit => { self.save_config(); ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
             ToggleTree => {
                 self.ui.show_tree = !self.ui.show_tree;

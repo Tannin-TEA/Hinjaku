@@ -2,13 +2,7 @@ use crate::error::Result;
 use ini::Ini;
 use std::collections::HashMap;
 use std::path::PathBuf;
-
-#[derive(PartialEq, Copy, Clone, Debug)]
-pub enum DisplayMode {
-    Fit,
-    WindowFit,
-    Manual,
-}
+use crate::types::{DisplayMode, WindowMode};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SortMode {
@@ -115,10 +109,8 @@ pub struct Config {
     pub manga_mode: bool,
     /// 表示モード
     pub display_mode: DisplayMode,
-    /// フルスクリーンボーダレス
-    pub is_fullscreen: bool,
-    /// 小画面ボーダレス
-    pub is_small_borderless: bool,
+    /// ウィンドウの表示形態 (標準/ボーダレス/フルスクリーン)
+    pub window_mode: WindowMode,
     /// ツリーの表示
     pub show_tree: bool,
 }
@@ -177,8 +169,7 @@ impl Default for Config {
             pdf_render_dpi: 96,
             manga_mode: false,
             display_mode: DisplayMode::Fit,
-            is_fullscreen: false,
-            is_small_borderless: false,
+            window_mode: WindowMode::Standard,
             show_tree: false,
             keys: [
                 ("PrevPage", "ArrowLeft, P"),
@@ -190,9 +181,9 @@ impl Default for Config {
                 ("Up", "ArrowUp"),
                 ("Down", "ArrowDown"),
                 ("Enter", "Enter"),
-                ("ToggleFullscreen", "Enter"),
-                ("ToggleBorderless", "Alt+Enter"),
-                ("ToggleSmallBorderless", "Shift+Enter"),
+                ("ToggleMaximized", "Enter"),
+                ("ToggleFullscreen", "Alt+Enter"),
+                ("ToggleBorderless", "Shift+Enter"),
                 ("Escape", "Escape"),
                 ("ToggleTree", "T"),
                 ("ToggleFit", "F"),
@@ -317,8 +308,15 @@ pub fn load_config_file(custom_name: Option<&str>) -> (Config, Option<PathBuf>) 
                     _           => DisplayMode::Fit,
                 };
             }
-            if let Some(v) = sec.get("IsFullscreen") { cfg.is_fullscreen = v == "true"; }
-            if let Some(v) = sec.get("IsSmallBorderless") { cfg.is_small_borderless = v == "true"; }
+            if let Some(v) = sec.get("WindowMode") {
+                cfg.window_mode = match v.to_lowercase().as_str() {
+                    "borderless" => WindowMode::Borderless,
+                    "fullscreen" => WindowMode::Fullscreen,
+                    _            => WindowMode::Standard,
+                };
+            } else if sec.get("IsFullscreen") == Some(&"true".to_string()) { cfg.window_mode = WindowMode::Fullscreen; }
+            else if sec.get("IsSmallBorderless") == Some(&"true".to_string()) { cfg.window_mode = WindowMode::Borderless; }
+
             if let Some(v) = sec.get("ShowTree") { cfg.show_tree = v == "true"; }
         }
 
@@ -401,8 +399,11 @@ pub fn save_config_file(cfg: &Config, path: &std::path::Path) -> Result<()> {
             DisplayMode::WindowFit => "WindowFit",
             DisplayMode::Manual => "Manual",
         })
-        .set("IsFullscreen", cfg.is_fullscreen.to_string())
-        .set("IsSmallBorderless", cfg.is_small_borderless.to_string())
+        .set("WindowMode", match cfg.window_mode {
+            WindowMode::Standard => "Standard",
+            WindowMode::Borderless => "Borderless",
+            WindowMode::Fullscreen => "Fullscreen",
+        })
         .set("ShowTree", cfg.show_tree.to_string());
     
     for (i, app) in cfg.external_apps.iter().enumerate() {

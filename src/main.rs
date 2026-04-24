@@ -58,7 +58,16 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([config.window_width, config.window_height])
         .with_resizable(config.window_resizable)
         .with_drag_and_drop(true)
-        .with_maximized(config.window_maximized);
+        .with_maximized(config.window_maximized)
+        // 指示されたモードに応じて枠の有無と全画面状態を初期化
+        .with_decorations(match config.window_mode {
+            crate::types::WindowMode::Standard => true,
+            crate::types::WindowMode::Borderless | crate::types::WindowMode::Fullscreen => false,
+        })
+        .with_fullscreen(match config.window_mode {
+            crate::types::WindowMode::Fullscreen => true,
+            _ => false,
+        });
 
     // 「中央に配置」がオフの場合のみ、保存された座標を適用する
     if !config.window_centered {

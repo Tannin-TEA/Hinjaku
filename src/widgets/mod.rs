@@ -19,8 +19,8 @@ pub enum ViewerAction {
     GoPrevDir,
     GoNextDir,
     Seek(usize),
-    SetOpenFromEnd(bool),
-    SetDisplayMode(crate::config::DisplayMode),
+    SetOpenFromEnd(bool), // config::DisplayMode は types::DisplayMode に移動したため修正
+    SetDisplayMode(crate::types::DisplayMode),
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -31,9 +31,7 @@ pub enum ViewerAction {
     SetBgMode(crate::config::BackgroundMode),
     ToggleAlwaysOnTop,
     ToggleWindowResizable,
-    ToggleWindowCentered,
-    ResizeWindow(u32, u32),
-    MoveToCenter,
+    ToggleWindowCentered, // config::DisplayMode は types::DisplayMode に移動したため修正
     OpenRecent(String),
     OpenFolder,
     RevealInExplorer,
@@ -49,9 +47,9 @@ pub enum ViewerAction {
     OpenLimiterSettings,
     SetLimiterPageDuration(f32),
     SetLimiterFolderDuration(f32),
-    ToggleFullscreen,
-    ToggleBorderless,
-    ToggleSmallBorderless,
+    SetWindowMode(crate::types::WindowMode), // WindowMode 列挙型で一元管理
+    ResizeWindow(u32, u32),
+    MoveToCenter,
     Exit,
     ToggleTree,
 }

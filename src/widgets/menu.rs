@@ -1,7 +1,7 @@
 use eframe::egui::{self, RichText, Button, menu};
 use crate::config::{self, FilterMode, BackgroundMode};
 use crate::manager::Manager;
-use crate::types::ViewState;
+use crate::types::{ViewState, WindowMode};
 use crate::utils;
 use super::ViewerAction;
 
@@ -112,14 +112,14 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
         ui.close_menu(); action = Some(ViewerAction::SetDisplayMode(crate::types::DisplayMode::Manual));
     }
     ui.separator();
-    if ui.selectable_label(view.is_maximized, "最大化表示 (Enter)").clicked() {
-        ui.close_menu(); action = Some(ViewerAction::ToggleFullscreen);
+    if ui.selectable_label(view.window_mode == WindowMode::Standard && view.is_maximized, "最大化 (Enter)").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::SetWindowMode(WindowMode::Standard)); // 最大化はStandardモードの一部として扱う
     }
-    if ui.selectable_label(view.is_fullscreen, "全画面ボーダレス (Alt+Enter)").clicked() {
-        ui.close_menu(); action = Some(ViewerAction::ToggleBorderless);
+    if ui.selectable_label(view.window_mode == WindowMode::Fullscreen, "全画面ボーダレス (Alt+Enter)").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::SetWindowMode(WindowMode::Fullscreen));
     }
-    if ui.selectable_label(view.is_small_borderless, "小画面ボーダレス (Shift+Enter)").clicked() {
-        ui.close_menu(); action = Some(ViewerAction::ToggleSmallBorderless);
+    if ui.selectable_label(view.window_mode == WindowMode::Borderless, "小画面ボーダレス (Shift+Enter)").clicked() {
+        ui.close_menu(); action = Some(ViewerAction::SetWindowMode(WindowMode::Borderless));
     }
     ui.separator();
     if ui.button("拡大 (+)").clicked() { action = Some(ViewerAction::ZoomIn); }
@@ -164,9 +164,18 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
         ui.close_menu(); action = Some(ViewerAction::TogglePdfWarning);
     }
 
-    ui.menu_button("ウィンドウサイズ", |ui| {
+    ui.menu_button("表示枠の規定サイズ", |ui| {
         ui.set_min_width(220.0);
-        for (w, h, label) in [(640, 480, "VGA"), (800, 600, "SVGA"), (1024, 768, "XGA"), (1280, 960, "Quad-VGA"), (1400, 1050, "SXGA+"), (1600, 1200, "UXGA")] {
+        for (w, h, label) in [
+            (640, 480, "VGA"), (800, 600, "SVGA"), (1024, 768, "XGA"), (1280, 1024, "SXGA"), (1600, 1200, "UXGA")
+        ] {
+            if ui.button(format!("{} ({}x{})", label, w, h)).clicked() {
+                ui.close_menu();
+                action = Some(ViewerAction::ResizeWindow(w, h));
+            }
+        }
+        ui.separator();
+        for (w, h, label) in [(1280, 720, "HD"), (1920, 1080, "FHD"), (2560, 1440, "WQHD")] {
             if ui.button(format!("{} ({}x{})", label, w, h)).clicked() {
                 ui.close_menu();
                 action = Some(ViewerAction::ResizeWindow(w, h));
