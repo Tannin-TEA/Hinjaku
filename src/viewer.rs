@@ -987,6 +987,13 @@ impl App {
             self.draw_boss_mode(ctx);
         }
         self.toasts.draw(ctx);
+
+        // ボーダレスモード時に 1px の外枠を描画する
+        if self.view.window_mode == WindowMode::Borderless {
+            let color = ctx.style().visuals.text_color();
+            ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("borderless_outline")))
+                .rect_stroke(ctx.screen_rect().shrink(0.5), 0.0, egui::Stroke::new(1.0, color));
+        }
     }
 
     fn draw_windows(&mut self, ctx: &egui::Context) {

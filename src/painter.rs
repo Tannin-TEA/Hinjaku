@@ -51,6 +51,13 @@ pub fn draw_centered(
         DisplayMode::Manual => zoom,
     };
     let display_size = tex_size * scale;
+    // Fit/WindowFit かつ zoom≤1 のとき、数学的に display_size≤avail が保証される。
+    // FP 誤差でわずかに超えると ScrollArea がスクロールバーを出してしまうのでクリップする。
+    let display_size = if zoom <= 1.0 && mode != DisplayMode::Manual {
+        egui::vec2(display_size.x.min(avail.x), display_size.y.min(avail.y))
+    } else {
+        display_size
+    };
     let area = egui::vec2(display_size.x.max(avail.x), display_size.y.max(avail.y));
     let off  = egui::vec2(((area.x - display_size.x)*0.5).max(0.0), ((area.y - display_size.y)*0.5).max(0.0));
     // クリックとドラッグの両方を検知するように変更
