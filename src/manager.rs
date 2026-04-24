@@ -71,8 +71,10 @@ impl CachedImage {
         match self {
             CachedImage::Static(tex) => (tex, None),
             CachedImage::Animated { frames, total_ms, loop_start_time } => {
-                if *total_ms == 0 || frames.is_empty() {
-                    return (&frames.first().expect("BUG: Animated with 0 frames").0, None);
+                // frames が空 = アーカイブが 0 フレームの不正 GIF を返した構築バグ
+                let first = &frames.first().expect("BUG: CachedImage::Animated has 0 frames").0;
+                if *total_ms == 0 {
+                    return (first, None);
                 }
                 let elapsed_ms = ((now - loop_start_time) * 1000.0) as u32 % total_ms;
                 let mut acc = 0u32;
@@ -83,14 +85,14 @@ impl CachedImage {
                         return (tex, Some(next_sec));
                     }
                 }
-                (&frames[0].0, None)
+                (first, None)
             }
         }
     }
     pub fn first_frame(&self) -> &TextureHandle {
         match self {
             CachedImage::Static(tex) => tex,
-            CachedImage::Animated { frames, .. } => &frames[0].0,
+            CachedImage::Animated { frames, .. } => &frames.first().expect("BUG: CachedImage::Animated has 0 frames").0,
         }
     }
 }
