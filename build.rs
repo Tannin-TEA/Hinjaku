@@ -26,9 +26,9 @@ fn generate_h_icon_file(path: &str) {
     for y in 0..size {
         for x in 0..size {
             let i = (y * size + x) * 4;
-            let is_h = (x >= 6 && x <= 10 && y >= 5 && y <= 26) ||
-                       (x >= 21 && x <= 25 && y >= 5 && y <= 26) ||
-                       (y >= 14 && y <= 17 && x > 10 && x < 21);
+            let is_h = ((6..=10).contains(&x) && (5..=26).contains(&y)) ||
+                       ((21..=25).contains(&x) && (5..=26).contains(&y)) ||
+                       ((14..=17).contains(&y) && x > 10 && x < 21);
             if is_h {
                 // BMP/ICO は BGRA順 かつ 下から上へ格納するのが基本だが、
                 // 最近の 32bit(RGBA) DIB ならそのまま書ける

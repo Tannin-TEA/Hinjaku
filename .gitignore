@@ -5,8 +5,10 @@ hinjaku_debug.log
 
 
 # 今回追加するファイル
+/.vscode
 /.history
 /.claude
+/CLAUDE.md
 /MEMO.txt
 /AI-Prompt.txt
 /Prompt.txt

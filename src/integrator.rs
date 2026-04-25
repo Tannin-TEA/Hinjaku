@@ -110,7 +110,7 @@ fn start_pipe_server(tx: mpsc::Sender<(PathBuf, bool)>, ctx: egui::Context) {
                     let ok = unsafe {
                         ReadFile(pipe, buf.as_mut_ptr().cast(), buf.len() as u32, &mut read, std::ptr::null_mut())
                     };
-                    if ok != 0 && read >= 2 && read % 2 == 0 {
+                    if ok != 0 && read >= 2 && read.is_multiple_of(2) {
                         let words: &[u16] = unsafe {
                             std::slice::from_raw_parts(buf.as_ptr().cast(), (read / 2) as usize)
                         };
@@ -261,7 +261,7 @@ pub fn mmap_font_file(path: &str) -> Option<&'static [u8]> {
         }
 
         let mapping = CreateFileMappingW(handle, std::ptr::null(), PAGE_READONLY, 0, 0, std::ptr::null());
-        if mapping == std::ptr::null_mut() {
+        if mapping.is_null() {
             CloseHandle(handle);
             return None;
         }

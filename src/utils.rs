@@ -155,8 +155,8 @@ pub fn format_date_compact(secs: u64) -> String {
     let days = secs / 86400;
     let mut year = 1970u32;
     let mut d = days;
-    while d >= if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 } {
-        d -= if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
+    while d >= if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) { 366 } else { 365 } {
+        d -= if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) { 366 } else { 365 };
         year += 1;
     }
     let month = (d / 31 + 1).min(12);

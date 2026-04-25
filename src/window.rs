@@ -52,7 +52,7 @@ pub fn move_to_center(_ctx: &egui::Context, _inner_width: f32, _inner_height: f3
 
         // すべて同一のWindows座標系で計算しているため変換不要
         SetWindowPos(search.hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-        return true;
+        true
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -114,9 +114,9 @@ pub fn create_window_icon() -> egui::IconData {
     for y in 0..size {
         for x in 0..size {
             let i = (y * size + x) * 4;
-            let is_h = (x >= 6 && x <= 10 && y >= 5 && y <= 26) ||
-                       (x >= 21 && x <= 25 && y >= 5 && y <= 26) ||
-                       (y >= 14 && y <= 17 && x > 10 && x < 21);
+            let is_h = ((6..=10).contains(&x) && (5..=26).contains(&y)) ||
+                       ((21..=25).contains(&x) && (5..=26).contains(&y)) ||
+                       ((14..=17).contains(&y) && x > 10 && x < 21);
             if is_h { rgba[i..i+4].copy_from_slice(&[255, 255, 255, 255]); }
         }
     }

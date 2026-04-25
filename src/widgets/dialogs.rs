@@ -290,7 +290,7 @@ pub fn key_config_window(
                     ui.heading(RichText::new(cat_name).size(14.0).strong());
                     ui.separator();
 
-                    let chunk_size = (key_ids.len() + 1) / 2;
+                    let chunk_size = key_ids.len().div_ceil(2);
                     ui.columns(2, |cols| {
                         for (col_idx, chunk) in key_ids.chunks(chunk_size).enumerate() {
                             let col_ui = &mut cols[col_idx];

@@ -393,7 +393,7 @@ impl App {
         if self.is_nav_locked(ctx) { return; }
         self.prepare_nav();
         let last = self.manager.entries.len().saturating_sub(1);
-        self.manager.target_index = if self.view.manga_mode && last > 0 && last % 2 == 0 {
+        self.manager.target_index = if self.view.manga_mode && last > 0 && last.is_multiple_of(2) {
             last.saturating_sub(1)
         } else { last };
         let max_dim = self.get_effective_max_dim(ctx);
@@ -458,7 +458,7 @@ impl App {
     // ── ウィンドウヘルパー ────────────────────────────────────────────────────
 
     fn set_window_mode(&mut self, mode: WindowMode, ctx: &egui::Context) {
-        let old_mode = self.view.window_mode;
+        let _old_mode = self.view.window_mode;
 
         // 全画面以外のモードに移行する場合は、それを「直前のベースモード」として記憶する
         if mode != WindowMode::Fullscreen {
@@ -922,12 +922,12 @@ impl App {
             let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
             let screen_rect = ctx.screen_rect();
 
-            let in_menu_zone   = mouse_pos.map_or(false, |p| p.y < 40.0);
-            let in_status_zone = mouse_pos.map_or(false, |p| p.y > screen_rect.height() - 40.0);
+            let in_menu_zone   = mouse_pos.is_some_and(|p| p.y < 40.0);
+            let in_status_zone = mouse_pos.is_some_and(|p| p.y > screen_rect.height() - 40.0);
 
             // 前フレームのレイヤー情報からマウスがオーバーレイ（ドロップダウン含む）上にいるか検出
-            let mouse_over_overlay = mouse_pos.map_or(false, |p| {
-                ctx.layer_id_at(p).map_or(false, |id| id.order == egui::Order::Foreground)
+            let mouse_over_overlay = mouse_pos.is_some_and(|p| {
+                ctx.layer_id_at(p).is_some_and(|id| id.order == egui::Order::Foreground)
             });
 
             // メニューが開いている（ポップアップがある）間も表示を維持する判定を追加
@@ -997,11 +997,10 @@ impl App {
     }
 
     fn draw_windows(&mut self, ctx: &egui::Context) {
-        if self.ui.show_settings {
-            if widgets::settings_window(ctx, &mut self.ui.show_settings, &mut self.config, &mut self.ui.settings_args_tmp) {
+        if self.ui.show_settings
+            && widgets::settings_window(ctx, &mut self.ui.show_settings, &mut self.config, &mut self.ui.settings_args_tmp) {
                 self.save_config();
             }
-        }
         if self.ui.show_key_config {
             if let Some(id) = self.ui.capturing_key_for.clone() {
                 if let Some(c) = input::detect_key_combination(ctx) {
@@ -1092,11 +1091,10 @@ impl App {
                 self.ui.show_jump_dialog = false;
             }
         }
-        if self.ui.show_limiter_settings {
-            if widgets::limiter_settings_window(ctx, &mut self.ui.show_limiter_settings, &mut self.config) {
+        if self.ui.show_limiter_settings
+            && widgets::limiter_settings_window(ctx, &mut self.ui.show_limiter_settings, &mut self.config) {
                 self.save_config();
             }
-        }
         if self.ui.pdf_warning_open {
             egui::Window::new("PDF表示に関するお知らせ")
                 .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-20.0, -20.0))
@@ -1354,7 +1352,7 @@ impl eframe::App for App {
         // 通信イベントが終わった後の「この場所」で初めて重い処理を実行する
         if let Some(path) = path_to_open {
             // 外部からの要求、または新しいパスである場合のみ実行
-            let is_new = self.manager.archive_path.as_ref().map_or(true, |p| p != &path);
+            let is_new = self.manager.archive_path.as_ref() != Some(&path);
             let is_ipc = should_focus;
             if is_new || is_ipc {
                 if should_focus {

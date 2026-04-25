@@ -225,8 +225,7 @@ impl Manager {
                         if d.has_animation() {
                             d.into_frames().collect::<::image::ImageResult<Vec<_>>>()
                         } else {
-                            Err(::image::ImageError::IoError(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            Err(::image::ImageError::IoError(std::io::Error::other(
                                 "Not animated WebP",
                             )))
                         }
@@ -260,7 +259,7 @@ impl Manager {
 
         let img = if ext.ends_with(".avif") {
             #[cfg(target_os = "windows")]
-            { crate::wic::decode_rgba(&bytes).map_err(|e| e)? }
+            { crate::wic::decode_rgba(&bytes)? }
             #[cfg(not(target_os = "windows"))]
             { ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8() }
         } else {
@@ -343,7 +342,7 @@ impl Manager {
                                     self.current = if go_last {
                                         let last = self.entries.len().saturating_sub(1);
                                         if manga && last > 0 {
-                                            if (last % 2 == 0) == shift { last } else { last.saturating_sub(1) }
+                                            if last.is_multiple_of(2) == shift { last } else { last.saturating_sub(1) }
                                         } else { last }
                                     } else { 0 };
                                 }

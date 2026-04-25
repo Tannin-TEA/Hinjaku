@@ -314,8 +314,8 @@ pub fn load_config_file(custom_name: Option<&str>) -> (Config, Option<PathBuf>) 
                     "fullscreen" => WindowMode::Fullscreen,
                     _            => WindowMode::Standard,
                 };
-            } else if sec.get("IsFullscreen") == Some(&"true".to_string()) { cfg.window_mode = WindowMode::Fullscreen; }
-            else if sec.get("IsSmallBorderless") == Some(&"true".to_string()) { cfg.window_mode = WindowMode::Borderless; }
+            } else if sec.get("IsFullscreen") == Some("true") { cfg.window_mode = WindowMode::Fullscreen; }
+            else if sec.get("IsSmallBorderless") == Some("true") { cfg.window_mode = WindowMode::Borderless; }
 
             if let Some(v) = sec.get("ShowTree") { cfg.show_tree = v == "true"; }
         }

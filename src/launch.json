@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Hinjaku",
+            "cargo": {
+                "args": ["build", "--bin", "hinjaku"],
+                "filter": { "name": "hinjaku", "kind": "bin" }
+            },
+            "args": [], // 起動時に渡したいコマンドライン引数があればここに追加 (例: ["-d"])
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

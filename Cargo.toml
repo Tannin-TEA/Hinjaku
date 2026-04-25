@@ -3,6 +3,7 @@ name = "hinjaku"
 version = "0.1.5"
 edition = "2021"
 
+
 [[bin]]
 name = "hinjaku"
 path = "src/main.rs"
