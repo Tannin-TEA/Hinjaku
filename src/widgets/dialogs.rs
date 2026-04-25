@@ -337,8 +337,7 @@ pub fn key_config_window(
                 ui.separator();
                 egui::Grid::new("mouse_buttons_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     let mouse_actions = [
-                        "None", "PrevPage", "NextPage", "PrevPageSingle", "NextPageSingle",
-                        "PrevDir", "NextDir", "ToggleFit", "ToggleManga",
+                        "None", "ToggleFit", "ToggleManga", "ToggleMangaRtl", "WindSizeLock",
                     ];
                     for i in 0..3usize {
                         let (label, current) = match i {

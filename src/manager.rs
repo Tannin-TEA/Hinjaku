@@ -620,8 +620,16 @@ impl Manager {
         for i in lo..hi { req(i); }
         
         // 3. 0.1.0 互換の積極的なキャッシュクリーンアップ
-        self.cache.retain(|k, _| k.split(':').next().and_then(|s| s.parse::<usize>().ok()).map(|i| i >= lo && i < hi).unwrap_or(false));
-        self.pending.retain(|k| k.split(':').next().and_then(|s| s.parse::<usize>().ok()).map(|i| i >= lo && i < hi).unwrap_or(false));
+        self.cache.retain(|k, _| {
+            k.split(':').next().and_then(|s| s.parse::<usize>().ok())
+                .map(|i| i >= lo && i < hi)
+                .unwrap_or_else(|| { log::warn!("cache: 予期しないキー形式 '{}'、エントリを削除", k); false })
+        });
+        self.pending.retain(|k| {
+            k.split(':').next().and_then(|s| s.parse::<usize>().ok())
+                .map(|i| i >= lo && i < hi)
+                .unwrap_or_else(|| { log::warn!("cache: 予期しないキー形式 '{}' (pending)、削除", k); false })
+        });
         self.cache_lru.retain(|k| self.cache.contains_key(k));
     }
 

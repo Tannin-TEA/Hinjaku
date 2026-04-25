@@ -80,6 +80,7 @@ fn start_pipe_server(tx: mpsc::Sender<(PathBuf, bool)>, ctx: egui::Context) {
             use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, GetLastError, ERROR_PIPE_CONNECTED};
 
             let pipe_name_w: Vec<u16> = PIPE_NAME.encode_utf16().chain(Some(0u16)).collect();
+            let mut consecutive_failures = 0u32;
 
             loop {
                 let pipe = unsafe {
@@ -93,10 +94,16 @@ fn start_pipe_server(tx: mpsc::Sender<(PathBuf, bool)>, ctx: egui::Context) {
                     )
                 };
                 if pipe == INVALID_HANDLE_VALUE {
-                    eprintln!("[Hinjaku IPC] CreateNamedPipeW 失敗、再試行...");
+                    consecutive_failures += 1;
+                    if consecutive_failures >= 5 {
+                        eprintln!("[Hinjaku IPC] パイプ作成が{}回連続失敗。IPC機能を無効にします。", consecutive_failures);
+                        return;
+                    }
+                    eprintln!("[Hinjaku IPC] CreateNamedPipeW 失敗、再試行... ({}/5)", consecutive_failures);
                     std::thread::sleep(std::time::Duration::from_secs(1));
                     continue;
                 }
+                consecutive_failures = 0; // 成功したらリセット
 
                 // クライアントの接続を待つ（ブロッキング）
                 let connected = unsafe {

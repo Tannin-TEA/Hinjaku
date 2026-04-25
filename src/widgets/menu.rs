@@ -182,8 +182,8 @@ fn view_menu(ui: &mut egui::Ui, config: &config::Config, _manager: &Manager, vie
             }
         }
         ui.separator();
-        if ui.selectable_label(!config.window_resizable, "ウィンドロック").clicked() {
-            ui.close_menu(); action = Some(ViewerAction::ToggleWindowResizable);
+        if ui.selectable_label(!config.window_resizable, "WindSizeLock").clicked() {
+            ui.close_menu(); action = Some(ViewerAction::WindSizeLock);
         }
     });
     if ui.selectable_label(config.always_on_top, "常に手前に表示").clicked() {

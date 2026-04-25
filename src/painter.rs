@@ -150,17 +150,22 @@ pub fn draw_main_area(
                 if resp.dragged() {
                     ui.scroll_with_delta(resp.drag_delta());
                 }
-                let cx = rect.min.x + total_w / 2.0;
+                // 見開き全体を画面中央に配置する
+                // cx（スパイン固定）ではなく、(ds1+ds2) の合計幅を total_w 内で中央揃えにする
+                let combined_w = ds1.x + ds2.x;
+                let x0 = rect.min.x + (total_w - combined_w) / 2.0;
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0));
-                
+
                 if manga_rtl {
-                    let r1 = egui::Rect::from_min_size(egui::pos2(cx, rect.min.y+(total_h-ds1.y)/2.0), ds1);
-                    let r2 = egui::Rect::from_min_size(egui::pos2(cx-ds2.x, rect.min.y+(total_h-ds2.y)/2.0), ds2);
+                    // RTL: r2（左ページ）→ r1（右ページ）の順で並ぶ
+                    let r2 = egui::Rect::from_min_size(egui::pos2(x0,          rect.min.y+(total_h-ds2.y)/2.0), ds2);
+                    let r1 = egui::Rect::from_min_size(egui::pos2(x0+ds2.x,   rect.min.y+(total_h-ds1.y)/2.0), ds1);
                     ui.painter().image(tex1.id(), r1, uv, Color32::WHITE);
                     ui.painter().image(tex2.id(), r2, uv, Color32::WHITE);
                 } else {
-                    let r1 = egui::Rect::from_min_size(egui::pos2(cx-ds1.x, rect.min.y+(total_h-ds1.y)/2.0), ds1);
-                    let r2 = egui::Rect::from_min_size(egui::pos2(cx, rect.min.y+(total_h-ds2.y)/2.0), ds2);
+                    // LTR: r1（左ページ）→ r2（右ページ）の順で並ぶ
+                    let r1 = egui::Rect::from_min_size(egui::pos2(x0,          rect.min.y+(total_h-ds1.y)/2.0), ds1);
+                    let r2 = egui::Rect::from_min_size(egui::pos2(x0+ds1.x,   rect.min.y+(total_h-ds2.y)/2.0), ds2);
                     ui.painter().image(tex1.id(), r1, uv, Color32::WHITE);
                     ui.painter().image(tex2.id(), r2, uv, Color32::WHITE);
                 }

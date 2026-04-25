@@ -821,6 +821,8 @@ impl App {
                 self.set_display_mode(next);
             }
             "ToggleManga" => self.toggle_manga(ctx),
+            "ToggleMangaRtl" => { self.config.manga_rtl = !self.config.manga_rtl; self.save_config(); ctx.request_repaint(); },
+            "WindSizeLock" => self.toggle_window_resizable(ctx),
             _ => {}
         }
     }
@@ -1256,7 +1258,7 @@ impl App {
 
             // ウィンドウ
             ToggleAlwaysOnTop     => self.toggle_always_on_top(ctx),
-            ToggleWindowResizable => self.toggle_window_resizable(ctx),
+            WindSizeLock          => self.toggle_window_resizable(ctx),
             ToggleWindowCentered  => {
                 self.config.window_centered = !self.config.window_centered;
                 if self.config.window_centered { self.applied_initial_center = false; }
