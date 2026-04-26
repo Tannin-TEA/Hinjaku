@@ -103,7 +103,10 @@ pub fn key_config_window(
                 ui.heading(RichText::new("マウスボタンの割り当て").size(14.0).strong());
                 ui.separator();
                 egui::Grid::new("mouse_buttons_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                    let mouse_actions = [
+                    let nav_actions: &[&str] = &[
+                        "None", "PrevPage", "NextPage", "PrevPageSingle", "NextPageSingle", "PrevDir", "NextDir",
+                    ];
+                    let mid_actions: &[&str] = &[
                         "None", "ToggleFit", "ToggleManga", "ToggleMangaRtl", "WindSizeLock",
                     ];
                     for i in 0..3usize {
@@ -112,12 +115,13 @@ pub fn key_config_window(
                             1 => ("中ボタン (WheelClick):", config.mouse_middle_action.clone()),
                             _ => ("進むボタン (Mouse5):",   config.mouse5_action.clone()),
                         };
+                        let actions = if i == 1 { mid_actions } else { nav_actions };
                         ui.label(label);
                         egui::ComboBox::from_id_source(label)
                             .selected_text(get_action_label(&current))
                             .show_ui(ui, |ui| {
-                                for act in mouse_actions {
-                                    if ui.selectable_label(current == *act, get_action_label(act)).clicked() {
+                                for &act in actions {
+                                    if ui.selectable_label(current == act, get_action_label(act)).clicked() {
                                         match i {
                                             0 => config.mouse4_action = act.to_string(),
                                             1 => config.mouse_middle_action = act.to_string(),
