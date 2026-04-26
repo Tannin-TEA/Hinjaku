@@ -29,17 +29,3 @@ pub struct ViewState {
     pub effective_zoom: f32,
 }
 
-impl ViewState {
-    pub fn new() -> Self {
-        Self {
-            display_mode: DisplayMode::Fit,
-            zoom: 1.0,
-            manga_mode: false,
-            manga_shift: false,
-            is_maximized: false,
-            window_mode: WindowMode::Standard,
-            last_base_mode: WindowMode::Standard,
-            effective_zoom: 1.0,
-        }
-    }
-}

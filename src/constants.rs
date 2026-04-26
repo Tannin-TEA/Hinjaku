@@ -66,5 +66,6 @@ pub mod painter {
 /// 画像処理関連の定数
 pub mod image {
     /// テクスチャの最大寸法
+    #[allow(dead_code)]
     pub const MAX_TEX_DIM: u32 = 1920;
 }

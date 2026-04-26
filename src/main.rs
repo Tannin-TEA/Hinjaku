@@ -64,10 +64,7 @@ fn main() -> eframe::Result<()> {
             crate::types::WindowMode::Standard => true,
             crate::types::WindowMode::Borderless | crate::types::WindowMode::Fullscreen => false,
         })
-        .with_fullscreen(match config.window_mode {
-            crate::types::WindowMode::Fullscreen => true,
-            _ => false,
-        });
+        .with_fullscreen(matches!(config.window_mode, crate::types::WindowMode::Fullscreen));
 
     // 「中央に配置」がオフの場合のみ、保存された座標を適用する
     if !config.window_centered {

@@ -17,8 +17,8 @@ pub fn clean_path(path: &Path) -> PathBuf {
 
     // UNCパス (\\?\) の除去
     let s_cleaned = p.to_string_lossy();
-    if s_cleaned.starts_with(r"\\?\") {
-        p = PathBuf::from(&s_cleaned[4..]);
+    if let Some(stripped) = s_cleaned.strip_prefix(r"\\?\") {
+        p = PathBuf::from(stripped);
     }
 
     // ドライブレターの末尾に \ を追加 (C: -> C:\)
@@ -32,8 +32,8 @@ pub fn clean_path(path: &Path) -> PathBuf {
 /// 外部アプリやエクスプローラーに渡すパスは必ずこの関数を通した String を使用する。
 pub fn to_clean_string(path: &Path) -> String {
     let s = path.to_string_lossy();
-    let cleaned = if s.starts_with(r"\\?\") {
-        s[4..].to_string()
+    let cleaned = if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        stripped.to_string()
     } else {
         s.into_owned()
     };
@@ -131,37 +131,51 @@ pub fn is_system(path: &Path) -> bool {
     false
 }
 
+fn is_leap_year(y: u64) -> bool {
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
+}
+
+fn days_in_month(year: u64, month: u64) -> u64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => if is_leap_year(year) { 29 } else { 28 },
+        _ => 31,
+    }
+}
+
+fn unix_days_to_ymd(days: u64) -> (u64, u64, u64) {
+    let mut year = 1970u64;
+    let mut d = days;
+    loop {
+        let dy = if is_leap_year(year) { 366 } else { 365 };
+        if d < dy { break; }
+        d -= dy;
+        year += 1;
+    }
+    let mut month = 1u64;
+    while month < 12 {
+        let dm = days_in_month(year, month);
+        if d < dm { break; }
+        d -= dm;
+        month += 1;
+    }
+    (year, month, d + 1)
+}
+
 /// 秒（UNIXタイム）を yyyy/mm/dd 形式の文字列に変換する (chrono 依存排除用)
 pub fn format_timestamp(secs: u64) -> String {
     if secs == 0 { return "----/--/--".to_string(); }
-    // 1970年からの経過秒数を日付に変換（Chrono 依存を避けた Hinjaku 実装）
-    let days = secs / 86400;
-    let mut year = 1970;
-    let mut d = days;
-    // 簡易的な閏年計算を含む年・月・日の算出
-    while d >= if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 } {
-        d -= if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
-        year += 1;
-    }
-    // 月・日の計算はまだ概算ですが、年は正確になります
-    let month = (d / 31) + 1;
-    let day = (d % 31) + 1;
-    format!("{:04}/{:02}/{:02}", year, month.min(12), day.min(31))
+    let (y, m, d) = unix_days_to_ymd(secs / 86400);
+    format!("{:04}/{:02}/{:02}", y, m, d)
 }
 
 /// 秒（UNIXタイム）を yyyymmdd 形式で返す（イースターエッグ用）
+#[allow(dead_code)]
 pub fn format_date_compact(secs: u64) -> String {
     if secs == 0 { return "00000000".to_string(); }
-    let days = secs / 86400;
-    let mut year = 1970u32;
-    let mut d = days;
-    while d >= if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) { 366 } else { 365 } {
-        d -= if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) { 366 } else { 365 };
-        year += 1;
-    }
-    let month = (d / 31 + 1).min(12);
-    let day   = (d % 31 + 1).min(31);
-    format!("{:04}{:02}{:02}", year, month, day)
+    let (y, m, d) = unix_days_to_ymd(secs / 86400);
+    format!("{:04}{:02}{:02}", y, m, d)
 }
 
 // ── 自然順ソート ─────────────────────────────────────────────────────────────
