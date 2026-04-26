@@ -52,7 +52,7 @@ pub fn sort_settings_window(
                 }
             }
 
-            ui.label("矢印キーで選択 / Enterで戻る");
+            ui.label("矢印キーで選択 / Esc で戻る");
             ui.add_space(8.0);
 
             let scroll_height = ui.available_height() - 60.0;
